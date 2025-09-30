@@ -2,13 +2,15 @@ import slicer
 from slicer.ScriptedLoadableModule import *
 from slicer.i18n import tr as _, translate
 
-from SlicerNNUNetLib import Widget
+from nnUNet_modified_Lib import Widget
 
 
-class SlicerNNUNet(ScriptedLoadableModule):
+class nnUNet_modified(ScriptedLoadableModule):
     def __init__(self, parent):
+        print("remoteRoot:", __file__)
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("nnUNet")
+
+        self.parent.title = _("nnUNet_modified")
         self.parent.categories = [translate("qSlicerAbstractCoreModule", "Segmentation")]
         self.parent.dependencies = []
         self.parent.contributors = ["Thibault Pelletier (Kitware SAS)"]
@@ -30,14 +32,16 @@ class SlicerNNUNet(ScriptedLoadableModule):
         )
 
 
-class SlicerNNUNetWidget(ScriptedLoadableModuleWidget):
+class nnUNet_modifiedWidget(ScriptedLoadableModuleWidget):
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
+        
         ScriptedLoadableModuleWidget.__init__(self, parent)
         self.logic = None
 
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
+        
         ScriptedLoadableModuleWidget.setup(self)
         widget = Widget()
         self.logic = widget.logic
@@ -45,11 +49,11 @@ class SlicerNNUNetWidget(ScriptedLoadableModuleWidget):
 
     def onReload(self):
         """
-        Customization of reload to allow reloading of the SlicerNNUNetLib files.
+        Customization of reload to allow reloading of the nnUNet_modified_Lib files.
         """
         import imp
 
-        packageName = "SlicerNNUNetLib"
+        packageName = "nnUNet_modified_Lib"
         submoduleNames = ["Signal", "Parameter", "InstallLogic", "SegmentationLogic", "Widget"]
         f, filename, description = imp.find_module(packageName)
         package = imp.load_module(packageName, f, filename, description)
@@ -64,10 +68,10 @@ class SlicerNNUNetWidget(ScriptedLoadableModuleWidget):
         ScriptedLoadableModuleWidget.onReload(self)
 
 
-class SlicerNNUNetTest(ScriptedLoadableModuleTest):
+class nnUNet_modifiedTest(ScriptedLoadableModuleTest):
     def runTest(self):
         from pathlib import Path
-        from SlicerNNUNetLib import InstallLogic
+        from nnUNet_modified_Lib import InstallLogic
 
         try:
             from SlicerPythonTestRunnerLib import RunnerLogic, RunSettings, isRunningInTestMode

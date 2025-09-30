@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import slicer
 from packaging.version import parse
 
-from SlicerNNUNetLib import Widget, Signal
+from nnUNet_modified_Lib import Widget, Signal
 from Testing.Utils import load_test_CT_volume
 
 

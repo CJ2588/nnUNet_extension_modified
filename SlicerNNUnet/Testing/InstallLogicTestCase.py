@@ -1,6 +1,6 @@
 import unittest
 
-from SlicerNNUNetLib import InstallLogic
+from nnUNet_modified_Lib import InstallLogic
 
 
 class InstallLogicTestCase(unittest.TestCase):

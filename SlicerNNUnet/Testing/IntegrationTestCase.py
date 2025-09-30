@@ -1,8 +1,8 @@
 import pytest
 import slicer
 
-from SlicerNNUNetLib import Widget
-from SlicerNNUNetLib.Parameter import Parameter
+from nnUNet_modified_Lib import Widget
+from nnUNet_modified_Lib.Parameter import Parameter
 from .Utils import NNUNetTestCase, load_test_CT_volume, _dataFolderPath
 
 

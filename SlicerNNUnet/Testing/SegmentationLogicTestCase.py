@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 import qt
 import slicer
 
-from SlicerNNUNetLib import SegmentationLogic, Signal
-from SlicerNNUNetLib.Parameter import Parameter
+from nnUNet_modified_Lib import SegmentationLogic, Signal
+from nnUNet_modified_Lib.Parameter import Parameter
 from .Utils import NNUNetTestCase, load_test_CT_volume
 
 

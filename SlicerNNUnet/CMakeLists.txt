@@ -1,15 +1,15 @@
 #-----------------------------------------------------------------------------
-set(MODULE_NAME SlicerNNUNet)
+set(MODULE_NAME nnUNet_modified)
 
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  ${MODULE_NAME}Lib/__init__.py
-  ${MODULE_NAME}Lib/InstallLogic.py
-  ${MODULE_NAME}Lib/Parameter.py
-  ${MODULE_NAME}Lib/SegmentationLogic.py
-  ${MODULE_NAME}Lib/Signal.py
-  ${MODULE_NAME}Lib/Widget.py
+  ${MODULE_NAME}_Lib/__init__.py
+  ${MODULE_NAME}_Lib/InstallLogic.py
+  ${MODULE_NAME}_Lib/Parameter.py
+  ${MODULE_NAME}_Lib/SegmentationLogic.py
+  ${MODULE_NAME}_Lib/Signal.py
+  ${MODULE_NAME}_Lib/Widget.py
   Testing/__init__.py
   Testing/InstallLogicTestCase.py
   Testing/IntegrationTestCase.py

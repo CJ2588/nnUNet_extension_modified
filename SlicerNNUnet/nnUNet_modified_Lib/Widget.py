@@ -38,7 +38,7 @@ class Widget(qt.QWidget):
         # Instantiate widget UI
         layout = qt.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        uiWidget = slicer.util.loadUI(self.resourcePath().joinpath("UI/SlicerNNUNet.ui").as_posix())
+        uiWidget = slicer.util.loadUI(self.resourcePath().joinpath("UI/nnUNet_modified.ui").as_posix())
         uiWidget.setMRMLScene(slicer.mrmlScene)
         layout.addWidget(uiWidget)
 
@@ -51,6 +51,24 @@ class Widget(qt.QWidget):
 
         self.ui.stopButton.setIcon(self.icon("stop_icon.png"))
         self.ui.stopButton.clicked.connect(self.onStopClicked)
+
+        # --- Create channel combo box dynamically ---
+        self.ui.channelComboBox = qt.QComboBox()
+        self.ui.channelComboBox.setToolTip("Select which channel of the volume to display")
+        self.ui.channelComboBox.setVisible(False)  # hidden at first
+
+        self.ui.channelLabel = qt.QLabel("Channel:")
+        self.ui.channelLabel.setVisible(False)
+
+        channelLayout = qt.QHBoxLayout()
+        channelLayout.addWidget(self.ui.channelLabel)
+        channelLayout.addWidget(self.ui.channelComboBox)
+
+        self.layout().addLayout(channelLayout)
+
+        # Connect change handler
+        self.ui.channelComboBox.currentIndexChanged.connect(self.onChannelChanged)
+
 
         # Logic connection
         self.logic.inferenceFinished.connect(self.onInferenceFinished)
@@ -85,7 +103,7 @@ class Widget(qt.QWidget):
 
     @staticmethod
     def _createParameterNode() -> WidgetParameterNode:
-        moduleName = "SlicerNNUNet"
+        moduleName = "nnUNet_modified"
         parameterNode = slicer.mrmlScene.GetSingletonNode(moduleName, "vtkMRMLScriptedModuleNode")
         if not parameterNode:
             parameterNode = slicer.mrmlScene.CreateNodeByClass("vtkMRMLScriptedModuleNode")
@@ -190,7 +208,52 @@ class Widget(qt.QWidget):
         self.logic.startSegmentation(self.getCurrentVolumeNode())
 
     def onInputChanged(self, *_):
-        self.ui.applyButton.setEnabled(self.getCurrentVolumeNode() is not None)
+        volumeNode = self.getCurrentVolumeNode()
+        self.ui.applyButton.setEnabled(volumeNode is not None)
+
+        # Hide channel controls by default
+        self.ui.channelComboBox.clear()
+        self.ui.channelComboBox.setVisible(False)
+        self.ui.channelLabel.setVisible(False)
+
+        if volumeNode:
+            imageData = volumeNode.GetImageData()
+            if imageData:
+                numComponents = imageData.GetNumberOfScalarComponents()
+                print(numComponents)
+                if numComponents > 1:
+                    # Multi-channel: show channel selector
+                    for i in range(numComponents):
+                        self.ui.channelComboBox.addItem(f"Channel {i}")
+                    self.ui.channelComboBox.setVisible(True)
+                    self.ui.channelLabel.setVisible(True)
+                else:
+                    # Single channel – nothing to select, but you could still display Channel 0
+                    self.ui.channelComboBox.addItem("Channel 0")
+                    self.ui.channelComboBox.setVisible(True)
+                    self.ui.channelLabel.setVisible(True)
+
+    def onChannelChanged(self, index):
+        volumeNode = self.getCurrentVolumeNode()
+        if not volumeNode:
+            return
+
+        import vtk
+        extractor = vtk.vtkImageExtractComponents()
+        extractor.SetInputData(volumeNode.GetImageData())
+        extractor.SetComponents(index)
+        extractor.Update()
+
+        # Create/update a temporary node
+        channelNode = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLScalarVolumeNode", f"{volumeNode.GetName()}_ch{index}"
+        )
+        channelNode.SetAndObserveImageData(extractor.GetOutput())
+        channelNode.CopyOrientation(volumeNode)
+
+        slicer.util.setSliceViewerLayers(background=channelNode)
+        self._currentChannelNode = channelNode
+
 
     def getCurrentVolumeNode(self):
         return self.ui.inputSelector.currentNode()
