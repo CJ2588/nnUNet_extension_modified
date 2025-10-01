@@ -248,7 +248,7 @@ class Widget(qt.QWidget):
 
         if volumeNode:
             numChannels = self.detectChannelsFromNode(volumeNode)
-            print("Detected channels:", numChannels)
+            # print("Detected channels:", numChannels)
 
             if numChannels > 1:
                 for i in range(numChannels):
@@ -272,7 +272,6 @@ class Widget(qt.QWidget):
             return
 
         filePath = storageNode.GetFullNameFromFileName()
-        import nibabel as nib
         img = nib.load(filePath)
         data = img.get_fdata()
 
@@ -284,7 +283,7 @@ class Widget(qt.QWidget):
         # Convert numpy -> vtkImageData
         
         channelNode = slicer.util.addVolumeFromArray(channelData.astype(np.float32))
-        channelNode.SetName(f"{volumeNode.GetName()}_ch{index}")
+        channelNode.SetName(f"Temp_{volumeNode.GetName()}_ch{index}")
         channelNode.CopyOrientation(volumeNode)
 
         # Reuse preview node if possible
@@ -293,9 +292,8 @@ class Widget(qt.QWidget):
         else:
             self._channelPreviewNode.SetAndObserveImageData(channelNode.GetImageData())
             slicer.mrmlScene.RemoveNode(channelNode)  # keep scene clean
-
+        
         slicer.util.setSliceViewerLayers(background=self._channelPreviewNode)
-
 
 
     def getCurrentVolumeNode(self):
