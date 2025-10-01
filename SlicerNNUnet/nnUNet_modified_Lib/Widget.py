@@ -246,54 +246,59 @@ class Widget(qt.QWidget):
         self.channelComboBox.setVisible(False)
         self.channelLabel.setVisible(False)
 
-        if volumeNode:
-            numChannels = self.detectChannelsFromNode(volumeNode)
-            # print("Detected channels:", numChannels)
+        # Reset cache when volume changes
+        self._cachedImageData = None
 
+        if volumeNode:
+            storageNode = volumeNode.GetStorageNode()
+            if storageNode:
+                filePath = storageNode.GetFullNameFromFileName()
+                try:
+                    img = nib.load(filePath)
+                    self._cachedImageData = img.get_fdata()  # Cache entire array in memory
+                    numChannels = self._cachedImageData.shape[3] if self._cachedImageData.ndim == 4 else 1
+                except Exception as e:
+                    print("Failed to load with nibabel:", e)
+                    numChannels = 1
+            else:
+                numChannels = 1
+
+            # Populate combo box
             if numChannels > 1:
                 for i in range(numChannels):
                     self.channelComboBox.addItem(f"Channel {i}")
                 self.channelComboBox.setVisible(True)
                 self.channelLabel.setVisible(True)
             else:
-                # Optional: hide if only one channel
                 self.channelComboBox.addItem("Channel 0")
                 self.channelComboBox.setVisible(True)
                 self.channelLabel.setVisible(True)
 
 
     def onChannelChanged(self, index):
-        volumeNode = self.getCurrentVolumeNode()
-        if not volumeNode:
-            return
+        if not hasattr(self, "_cachedImageData") or self._cachedImageData is None:
+            return  # nothing cached
 
-        storageNode = volumeNode.GetStorageNode()
-        if not storageNode:
-            return
-
-        filePath = storageNode.GetFullNameFromFileName()
-        img = nib.load(filePath)
-        data = img.get_fdata()
-
-        if data.ndim == 4:
-            channelData = data[..., index]
+        if self._cachedImageData.ndim == 4:
+            channelData = self._cachedImageData[..., index]
         else:
-            channelData = data  # single channel
+            channelData = self._cachedImageData  # single channel
 
         # Convert numpy -> vtkImageData
-        
         channelNode = slicer.util.addVolumeFromArray(channelData.astype(np.float32))
-        channelNode.SetName(f"Temp_{volumeNode.GetName()}_ch{index}")
-        channelNode.CopyOrientation(volumeNode)
+        channelNode.CopyOrientation(self.getCurrentVolumeNode())
 
         # Reuse preview node if possible
         if not hasattr(self, "_channelPreviewNode"):
             self._channelPreviewNode = channelNode
+            self._channelPreviewNode.SetName("ChannelPreview")
+            self._channelPreviewNode.SetHideFromEditors(True)
         else:
             self._channelPreviewNode.SetAndObserveImageData(channelNode.GetImageData())
-            slicer.mrmlScene.RemoveNode(channelNode)  # keep scene clean
-        
+            slicer.mrmlScene.RemoveNode(channelNode)
+
         slicer.util.setSliceViewerLayers(background=self._channelPreviewNode)
+
 
 
     def getCurrentVolumeNode(self):
