@@ -2,6 +2,9 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+import nibabel as nib
+import numpy as np
+
 import qt
 import slicer
 from slicer.parameterNodeWrapper import parameterNodeWrapper
@@ -53,21 +56,21 @@ class Widget(qt.QWidget):
         self.ui.stopButton.clicked.connect(self.onStopClicked)
 
         # --- Create channel combo box dynamically ---
-        self.ui.channelComboBox = qt.QComboBox()
-        self.ui.channelComboBox.setToolTip("Select which channel of the volume to display")
-        self.ui.channelComboBox.setVisible(False)  # hidden at first
+        self.channelComboBox = qt.QComboBox()
+        self.channelComboBox.setToolTip("Select which channel of the volume to display")
+        self.channelComboBox.setVisible(False)  # hidden at first
 
-        self.ui.channelLabel = qt.QLabel("Channel:")
-        self.ui.channelLabel.setVisible(False)
+        self.channelLabel = qt.QLabel("Channel:")
+        self.channelLabel.setVisible(False)
 
         channelLayout = qt.QHBoxLayout()
-        channelLayout.addWidget(self.ui.channelLabel)
-        channelLayout.addWidget(self.ui.channelComboBox)
+        channelLayout.addWidget(self.channelLabel)
+        channelLayout.addWidget(self.channelComboBox)
 
         self.layout().addLayout(channelLayout)
 
         # Connect change handler
-        self.ui.channelComboBox.currentIndexChanged.connect(self.onChannelChanged)
+        self.channelComboBox.currentIndexChanged.connect(self.onChannelChanged)
 
 
         # Logic connection
@@ -207,52 +210,92 @@ class Widget(qt.QWidget):
         self.logic.setParameter(self._parameterNode.parameter)
         self.logic.startSegmentation(self.getCurrentVolumeNode())
 
+
+    @staticmethod
+    def detectChannelsFromNode(volumeNode):
+        """Return number of channels in a volume, using nibabel if possible."""
+        if volumeNode is None:
+            return 1  # nothing selected yet
+
+        storageNode = volumeNode.GetStorageNode()
+        if not storageNode:
+            return 1  # fallback
+
+        filePath = storageNode.GetFullNameFromFileName()
+        if not filePath:
+            return 1
+
+        try:
+            img = nib.load(filePath)
+            data = img.get_fdata()
+            if data.ndim == 4:  # shape [X, Y, Z, C]
+                return data.shape[3]
+            else:
+                return 1
+        except Exception as e:
+            print("Nibabel failed:", e)
+            return 1
+
+
     def onInputChanged(self, *_):
         volumeNode = self.getCurrentVolumeNode()
         self.ui.applyButton.setEnabled(volumeNode is not None)
 
         # Hide channel controls by default
-        self.ui.channelComboBox.clear()
-        self.ui.channelComboBox.setVisible(False)
-        self.ui.channelLabel.setVisible(False)
+        self.channelComboBox.clear()
+        self.channelComboBox.setVisible(False)
+        self.channelLabel.setVisible(False)
 
         if volumeNode:
-            imageData = volumeNode.GetImageData()
-            if imageData:
-                numComponents = imageData.GetNumberOfScalarComponents()
-                print(numComponents)
-                if numComponents > 1:
-                    # Multi-channel: show channel selector
-                    for i in range(numComponents):
-                        self.ui.channelComboBox.addItem(f"Channel {i}")
-                    self.ui.channelComboBox.setVisible(True)
-                    self.ui.channelLabel.setVisible(True)
-                else:
-                    # Single channel – nothing to select, but you could still display Channel 0
-                    self.ui.channelComboBox.addItem("Channel 0")
-                    self.ui.channelComboBox.setVisible(True)
-                    self.ui.channelLabel.setVisible(True)
+            numChannels = self.detectChannelsFromNode(volumeNode)
+            print("Detected channels:", numChannels)
+
+            if numChannels > 1:
+                for i in range(numChannels):
+                    self.channelComboBox.addItem(f"Channel {i}")
+                self.channelComboBox.setVisible(True)
+                self.channelLabel.setVisible(True)
+            else:
+                # Optional: hide if only one channel
+                self.channelComboBox.addItem("Channel 0")
+                self.channelComboBox.setVisible(True)
+                self.channelLabel.setVisible(True)
+
 
     def onChannelChanged(self, index):
         volumeNode = self.getCurrentVolumeNode()
         if not volumeNode:
             return
 
-        import vtk
-        extractor = vtk.vtkImageExtractComponents()
-        extractor.SetInputData(volumeNode.GetImageData())
-        extractor.SetComponents(index)
-        extractor.Update()
+        storageNode = volumeNode.GetStorageNode()
+        if not storageNode:
+            return
 
-        # Create/update a temporary node
-        channelNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLScalarVolumeNode", f"{volumeNode.GetName()}_ch{index}"
-        )
-        channelNode.SetAndObserveImageData(extractor.GetOutput())
+        filePath = storageNode.GetFullNameFromFileName()
+        import nibabel as nib
+        img = nib.load(filePath)
+        data = img.get_fdata()
+
+        if data.ndim == 4:
+            channelData = data[..., index]
+        else:
+            channelData = data  # single channel
+
+        # Convert numpy -> vtkImageData
+        
+        channelNode = slicer.util.addVolumeFromArray(channelData.astype(np.float32))
+        channelNode.SetName(f"{volumeNode.GetName()}_ch{index}")
         channelNode.CopyOrientation(volumeNode)
 
-        slicer.util.setSliceViewerLayers(background=channelNode)
-        self._currentChannelNode = channelNode
+        # Reuse preview node if possible
+        if not hasattr(self, "_channelPreviewNode"):
+            self._channelPreviewNode = channelNode
+        else:
+            self._channelPreviewNode.SetAndObserveImageData(channelNode.GetImageData())
+            slicer.mrmlScene.RemoveNode(channelNode)  # keep scene clean
+
+        slicer.util.setSliceViewerLayers(background=self._channelPreviewNode)
+
 
 
     def getCurrentVolumeNode(self):
