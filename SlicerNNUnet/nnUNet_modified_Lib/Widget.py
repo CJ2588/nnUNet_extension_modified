@@ -12,6 +12,7 @@ from slicer.parameterNodeWrapper import parameterNodeWrapper
 from .InstallLogic import InstallLogic, InstallLogicProtocol
 from .Parameter import Parameter
 from .SegmentationLogic import SegmentationLogic, SegmentationLogicProtocol
+from .MorphologyAnalysis import compute_vessel_metrics, save_metrics_to_file
 
 
 @parameterNodeWrapper
@@ -236,8 +237,8 @@ class Widget(qt.QWidget):
             print("Nibabel failed:", e)
             return 1
 
-
     def onInputChanged(self, *_):
+
         volumeNode = self.getCurrentVolumeNode()
         self.ui.applyButton.setEnabled(volumeNode is not None)
 
@@ -249,30 +250,29 @@ class Widget(qt.QWidget):
         # Reset cache when volume changes
         self._cachedImageData = None
 
-        if volumeNode:
-            storageNode = volumeNode.GetStorageNode()
-            if storageNode:
-                filePath = storageNode.GetFullNameFromFileName()
-                try:
-                    img = nib.load(filePath)
-                    self._cachedImageData = img.get_fdata()  # Cache entire array in memory
-                    numChannels = self._cachedImageData.shape[3] if self._cachedImageData.ndim == 4 else 1
-                except Exception as e:
-                    print("Failed to load with nibabel:", e)
-                    numChannels = 1
-            else:
-                numChannels = 1
+        if not volumeNode:
+            return
 
-            # Populate combo box
-            if numChannels > 1:
-                for i in range(numChannels):
-                    self.channelComboBox.addItem(f"Channel {i}")
-                self.channelComboBox.setVisible(True)
-                self.channelLabel.setVisible(True)
-            else:
-                self.channelComboBox.addItem("Channel 0")
-                self.channelComboBox.setVisible(True)
-                self.channelLabel.setVisible(True)
+        # Try to determine the number of channels
+        numChannels = 1
+        storageNode = volumeNode.GetStorageNode()
+        if storageNode:
+            filePath = storageNode.GetFullNameFromFileName()
+            try:
+                import nibabel as nib
+                img = nib.load(filePath)
+                self._cachedImageData = img.get_fdata()
+                numChannels = self._cachedImageData.shape[3] if self._cachedImageData.ndim == 4 else 1
+            except Exception as e:
+                print("Failed to load with nibabel:", e)
+
+        # Only show channel selector if there are multiple channels
+        if numChannels > 1:
+            for i in range(numChannels):
+                self.channelComboBox.addItem(f"Channel {i}")
+            self.channelComboBox.setVisible(True)
+            self.channelLabel.setVisible(True)
+
 
 
     def onChannelChanged(self, index):
@@ -292,12 +292,13 @@ class Widget(qt.QWidget):
         if not hasattr(self, "_channelPreviewNode"):
             self._channelPreviewNode = channelNode
             self._channelPreviewNode.SetName("ChannelPreview")
-            self._channelPreviewNode.SetHideFromEditors(True)
+            # self._channelPreviewNode.SetHideFromEditors(True)
         else:
             self._channelPreviewNode.SetAndObserveImageData(channelNode.GetImageData())
             slicer.mrmlScene.RemoveNode(channelNode)
 
         slicer.util.setSliceViewerLayers(background=self._channelPreviewNode)
+        slicer.util.resetSliceViews()
 
 
 
@@ -314,6 +315,23 @@ class Widget(qt.QWidget):
             segmentation = self.logic.loadSegmentation()
             segmentation.SetName(self.getCurrentVolumeNode().GetName() + "Segmentation")
             self._reportFinished("Inference ended successfully.")
+
+            # --- NEW PART: Morphological analysis ---
+            self.onProgressInfo("Running morphological analysis on segmentation...")
+
+            # Convert segmentation to numpy array
+            labelmap_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+            slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(segmentation, labelmap_node, self.getCurrentVolumeNode())
+            mask_array = slicer.util.arrayFromVolume(labelmap_node)
+
+            # Compute metrics
+            df = compute_vessel_metrics(mask_array)
+            csv_path = save_metrics_to_file(df)
+
+            # Notify user
+            self._reportFinished(f"Morphological analysis complete.\nResults saved to:\n{csv_path}")
+            slicer.util.openAddDataDialog([csv_path])
+
         except RuntimeError as e:
             self._reportError(f"Inference ended in error:\n{e}")
         finally:
