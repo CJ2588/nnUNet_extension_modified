@@ -57,22 +57,10 @@ class Widget(qt.QWidget):
         self.ui.stopButton.clicked.connect(self.onStopClicked)
 
         # --- Create channel combo box dynamically ---
-        self.channelComboBox = qt.QComboBox()
-        self.channelComboBox.setToolTip("Select which channel of the volume to display")
-        self.channelComboBox.setVisible(False)  # hidden at first
-
-        self.channelLabel = qt.QLabel("Channel:")
-        self.channelLabel.setVisible(False)
-
-        channelLayout = qt.QHBoxLayout()
-        channelLayout.addWidget(self.channelLabel)
-        channelLayout.addWidget(self.channelComboBox)
-
-        self.layout().addLayout(channelLayout)
-
+        self.ui.channelsComboBox.setToolTip("Select which channel of the volume to display")
+        
         # Connect change handler
-        self.channelComboBox.currentIndexChanged.connect(self.onChannelChanged)
-
+        self.ui.channelsComboBox.currentIndexChanged.connect(self.onChannelChanged)
 
         # Logic connection
         self.logic.inferenceFinished.connect(self.onInferenceFinished)
@@ -212,40 +200,15 @@ class Widget(qt.QWidget):
         self.logic.startSegmentation(self.getCurrentVolumeNode())
 
 
-    @staticmethod
-    def detectChannelsFromNode(volumeNode):
-        """Return number of channels in a volume, using nibabel if possible."""
-        if volumeNode is None:
-            return 1  # nothing selected yet
-
-        storageNode = volumeNode.GetStorageNode()
-        if not storageNode:
-            return 1  # fallback
-
-        filePath = storageNode.GetFullNameFromFileName()
-        if not filePath:
-            return 1
-
-        try:
-            img = nib.load(filePath)
-            data = img.get_fdata()
-            if data.ndim == 4:  # shape [X, Y, Z, C]
-                return data.shape[3]
-            else:
-                return 1
-        except Exception as e:
-            print("Nibabel failed:", e)
-            return 1
-
     def onInputChanged(self, *_):
 
         volumeNode = self.getCurrentVolumeNode()
         self.ui.applyButton.setEnabled(volumeNode is not None)
 
         # Hide channel controls by default
-        self.channelComboBox.clear()
-        self.channelComboBox.setVisible(False)
-        self.channelLabel.setVisible(False)
+        self.ui.channelsComboBox.clear()
+        self.ui.channelsComboBox.setVisible(False)
+        self.ui.channelsLabel.setVisible(False)
 
         # Reset cache when volume changes
         self._cachedImageData = None
@@ -269,11 +232,10 @@ class Widget(qt.QWidget):
         # Only show channel selector if there are multiple channels
         if numChannels > 1:
             for i in range(numChannels):
-                self.channelComboBox.addItem(f"Channel {i}")
-            self.channelComboBox.setVisible(True)
-            self.channelLabel.setVisible(True)
-
-
+                self.ui.channelsComboBox.addItem(f"Channel {i}")
+            self.ui.channelsComboBox.setVisible(True)
+            self.ui.channelsLabel.setVisible(True)
+            
 
     def onChannelChanged(self, index):
         if not hasattr(self, "_cachedImageData") or self._cachedImageData is None:
@@ -299,7 +261,6 @@ class Widget(qt.QWidget):
 
         slicer.util.setSliceViewerLayers(background=self._channelPreviewNode)
         slicer.util.resetSliceViews()
-
 
 
     def getCurrentVolumeNode(self):
