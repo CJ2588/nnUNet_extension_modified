@@ -1,3 +1,4 @@
+import os
 import traceback
 from pathlib import Path
 from typing import Optional
@@ -56,11 +57,14 @@ class Widget(qt.QWidget):
         self.ui.stopButton.setIcon(self.icon("stop_icon.png"))
         self.ui.stopButton.clicked.connect(self.onStopClicked)
 
-        # --- Create channel combo box dynamically ---
+        # --- Setup channels widget ---
         self.ui.channelsComboBox.setToolTip("Select which channel of the volume to display")
-        
-        # Connect change handler
         self.ui.channelsComboBox.currentIndexChanged.connect(self.onChannelChanged)
+
+        # --------------- Morphology-------------
+        self.ui.morphologyInput.currentNodeChanged.connect(self.onSegmentationInputChanged)
+        self.ui.morphologyToolButton.clicked.connect(self.onSelectMorphologyOutputFolder)
+        self.ui.morphologyGenerateButton.clicked.connect(self.onGenerateMorphologyClicked)
 
         # Logic connection
         self.logic.inferenceFinished.connect(self.onInferenceFinished)
@@ -84,12 +88,15 @@ class Widget(qt.QWidget):
                 "parameter.folds": self.ui.foldsLineEdit,
                 "parameter.nProcessPreprocessing": self.ui.nProcessPreprocessingSpinBox,
                 "parameter.nProcessSegmentationExport": self.ui.nProcessSegmentationExportSpinBox,
-                "parameter.disableTta": self.ui.disableTtaCheckBox
+                "parameter.disableTta": self.ui.disableTtaCheckBox,
+                # "parameter.morphologyOutputFolder": self.ui.morphologyOutputLineEdit,
             }
         )
 
         # Configure UI
         self.onInputChanged()
+        self.onSegmentationInputChanged()
+        self.morphologicalparatmeters()
         self.updateInstalledVersion()
         self._setApplyVisible(True)
 
@@ -258,13 +265,22 @@ class Widget(qt.QWidget):
         else:
             self._channelPreviewNode.SetAndObserveImageData(channelNode.GetImageData())
             slicer.mrmlScene.RemoveNode(channelNode)
-
+            
         slicer.util.setSliceViewerLayers(background=self._channelPreviewNode)
         slicer.util.resetSliceViews()
 
+    def onSegmentationInputChanged(self, *_):
+
+        segmentationNode = self.getCurrentSegmentationNode()
+        self.ui.morphologyGenerateButton.setEnabled(segmentationNode is not None)
+        
 
     def getCurrentVolumeNode(self):
         return self.ui.inputSelector.currentNode()
+    
+    def getCurrentSegmentationNode(self):
+        return self.ui.morphologyInput.currentNode()
+
 
     def onInferenceFinished(self, *_):
         if self.isStopping:
@@ -319,3 +335,85 @@ class Widget(qt.QWidget):
     @staticmethod
     def moveTextEditToEnd(textEdit):
         textEdit.verticalScrollBar().setValue(textEdit.verticalScrollBar().maximum)
+    
+    def morphologicalparatmeters(self, *_):
+
+        self.ui.morphologyStrutureComboBox.clear()
+        structures = ["Vessel","DC"]
+
+        for structure in structures:
+            self.ui.morphologyStrutureComboBox.addItem(structure)
+        
+    def onSelectMorphologyOutputFolder(self):
+        folder = qt.QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Folder",
+            "",
+            qt.QFileDialog.ShowDirsOnly | qt.QFileDialog.DontResolveSymlinks
+        )
+
+        if folder:
+            self.ui.morphologyOutputLineEdit.setText(folder)
+    
+    def onGenerateMorphologyClicked(self, *_):
+        structure_method = {"Vessel": compute_vessel_metrics}
+        segNode = self.getCurrentSegmentationNode()
+        if segNode is None:
+            self._reportError("No segmentation or volume selected.")
+            return
+
+        output_dir = self.ui.morphologyOutputLineEdit.text
+        structure = self.ui.morphologyStrutureComboBox.currentText
+
+        try:
+            self.onProgressInfo("Extracting Morphology properties....")
+            mask_array = self.getMaskNumpyFromNode(segNode)
+
+            df = structure_method[structure](mask_array)
+            csv_path = save_metrics_to_file(df=df, output_dir=output_dir)
+
+            self._reportFinished(f"Morphology complete. Saved to:\n{csv_path}")
+            slicer.util.loadTable(csv_path)
+
+        except Exception as e:
+            self._reportError(f"Morphology failed:\n{e}")
+
+
+    def getMaskNumpyFromNode(self, node):
+        """Return a numpy mask array from volume or segmentation node."""
+
+        if node is None:
+            raise ValueError("No input node provided.")
+
+        # Case 1: Segmentation node → export to labelmap
+        if node.IsA("vtkMRMLSegmentationNode"):
+            referenceVolume = self.getCurrentVolumeNode()  # for geometry
+            labelmapNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+
+            slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(
+                node,
+                labelmapNode,
+                referenceVolume
+            )
+
+            mask = slicer.util.arrayFromVolume(labelmapNode)
+            slicer.mrmlScene.RemoveNode(labelmapNode)  # cleanup
+            return mask
+
+        # Case 2: Already a labelmap volume → direct conversion
+        if node.IsA("vtkMRMLLabelMapVolumeNode"):
+            return slicer.util.arrayFromVolume(node)
+
+        # Case 3: Scalar volume — assume binary mask
+        if node.IsA("vtkMRMLScalarVolumeNode"):
+            return (slicer.util.arrayFromVolume(node) > 0).astype(np.uint8)
+
+        raise TypeError("Unsupported node type for morphology.")
+
+
+
+        
+
+        
+        
+

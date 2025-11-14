@@ -345,6 +345,163 @@ augmentation (TTA):</string>
     </widget>
    </item>
    <item>
+    <widget class="ctkCollapsibleButton" name="CollapsibleButton">
+     <property name="enabled">
+      <bool>true</bool>
+     </property>
+     <property name="text">
+      <string>Post-processing</string>
+     </property>
+     <property name="collapsed">
+      <bool>false</bool>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_3">
+      <item>
+       <layout class="QFormLayout" name="postProcessingqFormLayout">
+        <item row="0" column="0">
+         <widget class="QLabel" name="postProcessingInputLabel">
+          <property name="text">
+           <string>Input Segmentation:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="qMRMLNodeComboBox" name="postProcessingInput">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="toolTip">
+           <string>Select Input segmentation</string>
+          </property>
+          <property name="nodeTypes">
+           <stringlist>
+            <string>vtkMRMLSegmentationNode</string>
+            <string>vtkMRMLScalarVolumeNode</string>
+            <string>vtkMRMLLabelMapVolumeNode</string>
+           </stringlist>
+          </property>
+          <property name="addEnabled">
+           <bool>false</bool>
+          </property>
+          <property name="removeEnabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="postProcessingMethodLabel">
+          <property name="text">
+           <string>Method:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="postProcessingMethodComboBox"/>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QPushButton" name="postProcessingApplyButton">
+        <property name="text">
+         <string>Apply</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="MorphologyCollapsibleButton">
+     <property name="text">
+      <string>Morphology </string>
+     </property>
+     <property name="collapsed">
+      <bool>true</bool>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_2">
+      <property name="leftMargin">
+       <number>5</number>
+      </property>
+      <item>
+       <layout class="QFormLayout" name="morphologyFormLayout">
+        <item row="0" column="0">
+         <widget class="QLabel" name="morphologyInputLabel">
+          <property name="text">
+           <string>Input segmentation: </string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="qMRMLNodeComboBox" name="morphologyInput">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="toolTip">
+           <string>Select segmentation</string>
+          </property>
+          <property name="nodeTypes">
+           <stringlist>
+            <string>vtkMRMLSegmentationNode</string>
+            <string>vtkMRMLScalarVolumeNode</string>
+           </stringlist>
+          </property>
+          <property name="showChildNodeTypes">
+           <bool>false</bool>
+          </property>
+          <property name="addEnabled">
+           <bool>false</bool>
+          </property>
+          <property name="removeEnabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="morphologyStrutureLabel">
+          <property name="text">
+           <string>Struture: </string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="morphologyStrutureComboBox"/>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QWidget" name="widget" native="true">
+        <layout class="QGridLayout" name="gridLayout">
+         <item row="0" column="2">
+          <widget class="QToolButton" name="morphologyToolButton">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="morphologyOutputLineEdit"/>
+         </item>
+         <item row="0" column="0">
+          <widget class="QLabel" name="morphologyOutputLabel">
+           <property name="text">
+            <string>Output Folder: </string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="morphologyGenerateButton">
+        <property name="text">
+         <string>Generate </string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QTextEdit" name="logTextEdit">
      <property name="lineWrapMode">
       <enum>QTextEdit::NoWrap</enum>
@@ -407,12 +564,44 @@ augmentation (TTA):</string>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>122</x>
-     <y>132</y>
+     <x>319</x>
+     <y>120</y>
     </hint>
     <hint type="destinationlabel">
-     <x>322</x>
+     <x>353</x>
      <y>117</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>SlicerNNUnet</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>morphologyInput</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>238</x>
+     <y>395</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>284</x>
+     <y>371</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>SlicerNNUnet</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>postProcessingInput</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>167</x>
+     <y>267</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>226</x>
+     <y>252</y>
     </hint>
    </hints>
   </connection>

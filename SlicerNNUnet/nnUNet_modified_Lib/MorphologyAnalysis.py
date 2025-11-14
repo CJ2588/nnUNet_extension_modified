@@ -36,9 +36,10 @@ def compute_vessel_metrics(vessel_mask: np.ndarray, min_volume: int = 50000):
     return pd.DataFrame(results)
 
 
-def save_metrics_to_file(df: pd.DataFrame, base_name: str = "VesselMetrics"):
+
+def save_metrics_to_file(df: pd.DataFrame, base_name: str = "VesselMetrics", output_dir: str = slicer.app.temporaryPath):
     """Save results to a CSV file in the Slicer temp directory and return the path."""
-    output_dir = slicer.app.temporaryPath
+    
     csv_path = os.path.join(output_dir, f"{base_name}.csv")
     df.to_csv(csv_path, index=False)
     return csv_path
