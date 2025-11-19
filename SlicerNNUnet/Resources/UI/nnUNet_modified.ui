@@ -353,7 +353,7 @@ augmentation (TTA):</string>
       <string>Post-processing</string>
      </property>
      <property name="collapsed">
-      <bool>false</bool>
+      <bool>true</bool>
      </property>
      <layout class="QVBoxLayout" name="verticalLayout_3">
       <item>
@@ -398,6 +398,16 @@ augmentation (TTA):</string>
         <item row="1" column="1">
          <widget class="QComboBox" name="postProcessingMethodComboBox"/>
         </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="thresholdSizeLabel">
+          <property name="text">
+           <string>Threshold Size:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QLineEdit" name="thresholdSizeLineEdit"/>
+        </item>
        </layout>
       </item>
       <item>
@@ -415,12 +425,18 @@ augmentation (TTA):</string>
      <property name="text">
       <string>Morphology </string>
      </property>
+     <property name="autoRepeatInterval">
+      <number>98</number>
+     </property>
      <property name="collapsed">
       <bool>true</bool>
      </property>
+     <property name="collapsedHeight">
+      <number>7</number>
+     </property>
      <layout class="QVBoxLayout" name="verticalLayout_2">
       <property name="leftMargin">
-       <number>5</number>
+       <number>4</number>
       </property>
       <item>
        <layout class="QFormLayout" name="morphologyFormLayout">

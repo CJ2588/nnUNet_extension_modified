@@ -14,6 +14,7 @@ from .InstallLogic import InstallLogic, InstallLogicProtocol
 from .Parameter import Parameter
 from .SegmentationLogic import SegmentationLogic, SegmentationLogicProtocol
 from .MorphologyAnalysis import compute_vessel_metrics, save_metrics_to_file
+from .PostProcessing import Volume_Threshold
 
 
 @parameterNodeWrapper
@@ -66,6 +67,12 @@ class Widget(qt.QWidget):
         self.ui.morphologyToolButton.clicked.connect(self.onSelectMorphologyOutputFolder)
         self.ui.morphologyGenerateButton.clicked.connect(self.onGenerateMorphologyClicked)
 
+        # --------------- Post Processing-------------
+
+        self.ui.postProcessingApplyButton.clicked.connect(self.onApplyPostProcessing)
+        self.ui.postProcessingMethodComboBox.currentTextChanged.connect(self.onPostProcessingMethodChanged)
+
+
         # Logic connection
         self.logic.inferenceFinished.connect(self.onInferenceFinished)
         self.logic.errorOccurred.connect(self.onInferenceError)
@@ -97,6 +104,7 @@ class Widget(qt.QWidget):
         self.onInputChanged()
         self.onSegmentationInputChanged()
         self.morphologicalparatmeters()
+        self.postProcessingparameters()
         self.updateInstalledVersion()
         self._setApplyVisible(True)
 
@@ -336,10 +344,90 @@ class Widget(qt.QWidget):
     def moveTextEditToEnd(textEdit):
         textEdit.verticalScrollBar().setValue(textEdit.verticalScrollBar().maximum)
     
+
+    def onPostProcessingMethodChanged(self, text):
+        isVolumeThreshold = (text == "Volume Threshold")
+
+        self.ui.thresholdSizeLabel.setVisible(isVolumeThreshold)
+        self.ui.thresholdSizeLineEdit.setVisible(isVolumeThreshold)
+
+    
+    def postProcessingparameters(self, *_):
+        self.ui.postProcessingMethodComboBox.clear()
+
+        Methods = ["Volume Threshold"]
+
+        for method in Methods:
+            self.ui.postProcessingMethodComboBox.addItem(method)
+
+        self.onPostProcessingMethodChanged(self.ui.postProcessingMethodComboBox.currentText)
+    
+    def onApplyPostProcessing(self):
+        
+        processingMethods = {"Volume Threshold" : Volume_Threshold}
+
+        segNode = self.ui.postProcessingInput.currentNode()
+
+        if segNode is None:
+            self._reportError("No segmentation or volume selected.")
+            return
+        
+        # postprocess
+        methodName = self.ui.postProcessingMethodComboBox.currentText
+        processingMethod = processingMethods.get(methodName)
+
+        
+        if processingMethod is None:
+            self._reportError(f"Unknown method: {methodName}")
+            return
+
+        try:
+            threshold = int(self.ui.thresholdSizeLineEdit.text)
+        except:
+            self._reportError("Threshold must be an integer.")
+            return
+
+        try:
+            self.onProgressInfo("Processing Segmentation....")
+
+            mask_array = self.getMaskNumpyFromNode(segNode)
+
+            cleaned_array = processingMethod(mask_array,threshold)
+
+            self._reportFinished(f"Processing complete.")
+
+            # Create a labelmap from the cleaned mask
+            cleaned_labelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+            cleaned_labelmap.SetName(segNode.GetName() + "_PP_Labelmap")
+
+            slicer.util.updateVolumeFromArray(cleaned_labelmap, cleaned_array)
+
+            
+            # copy geometry from reference volume
+            refVolume = self.getCurrentVolumeNode()
+            cleaned_labelmap.CopyOrientation(refVolume)
+            cleaned_labelmap.SetSpacing(refVolume.GetSpacing())
+            cleaned_labelmap.SetOrigin(refVolume.GetOrigin())
+
+            # convert back to segmentation node
+            segmentation_pp = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+            segmentation_pp.SetName(self.getCurrentVolumeNode().GetName() + "_PostProcessed")
+
+            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(cleaned_labelmap, segmentation_pp)
+
+            # Cleanup
+            slicer.mrmlScene.RemoveNode(cleaned_labelmap)
+            self._reportFinished("Post-processing complete.")
+            
+
+        except Exception as e:
+            self._reportError(f"Post processing failed failed:\n{e}")
+
+
     def morphologicalparatmeters(self, *_):
 
         self.ui.morphologyStrutureComboBox.clear()
-        structures = ["Vessel","DC"]
+        structures = ["Vessel"]
 
         for structure in structures:
             self.ui.morphologyStrutureComboBox.addItem(structure)
