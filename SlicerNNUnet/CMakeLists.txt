@@ -10,6 +10,8 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}_Lib/SegmentationLogic.py
   ${MODULE_NAME}_Lib/Signal.py
   ${MODULE_NAME}_Lib/Widget.py
+  ${MODULE_NAME}_Lib/PostProcessing.py
+  ${MODULE_NAME}_Lib/MorhologyAnalysis.py
   Testing/__init__.py
   Testing/InstallLogicTestCase.py
   Testing/IntegrationTestCase.py

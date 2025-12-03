@@ -1,12 +1,16 @@
 import numpy as np
 import pandas as pd
-from scipy.ndimage import distance_transform_edt, label
+from scipy.ndimage import distance_transform_edt, label, convolve
 from skimage.measure import regionprops
 from skimage.morphology import skeletonize_3d
 import slicer
 import os
 
-def compute_vessel_metrics(vessel_mask: np.ndarray, min_volume: int = 50000):
+
+
+
+
+def compute_vessel_metrics(vessel_mask: np.ndarray):
     """Compute morphological metrics for each vessel in a 3D binary mask."""
     # Remove small components
     labeled_mask, num = label(vessel_mask)
@@ -14,8 +18,6 @@ def compute_vessel_metrics(vessel_mask: np.ndarray, min_volume: int = 50000):
 
     results = []
     for region in props:
-        if region.area < min_volume:
-            continue
 
         vessel_separated = (labeled_mask == region.label)
         skeleton = skeletonize_3d(vessel_separated)
@@ -23,7 +25,11 @@ def compute_vessel_metrics(vessel_mask: np.ndarray, min_volume: int = 50000):
         radii = distance_map[skeleton > 0]
         diameters = 2 * radii
 
+        
+
+        # Length = # of skeleton voxels
         length = np.sum(skeleton)
+
         results.append({
             "VesselLabel": region.label,
             "Volume": region.area,
@@ -31,6 +37,7 @@ def compute_vessel_metrics(vessel_mask: np.ndarray, min_volume: int = 50000):
             "Mean Diameter": float(np.mean(diameters)),
             "Min Diameter": float(np.min(diameters)),
             "Max Diameter": float(np.max(diameters)),
+            # "Branch Points": n_branches,
         })
 
     return pd.DataFrame(results)
