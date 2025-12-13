@@ -440,6 +440,7 @@ augmentation (TTA):</string>
       </property>
       <item>
        <layout class="QFormLayout" name="morphologyFormLayout">
+        <!-- Input segmentation -->
         <item row="0" column="0">
          <widget class="QLabel" name="morphologyInputLabel">
           <property name="text">
@@ -472,6 +473,8 @@ augmentation (TTA):</string>
           </property>
          </widget>
         </item>
+
+        <!-- Structure selection (kept as-is) -->
         <item row="1" column="0">
          <widget class="QLabel" name="morphologyStrutureLabel">
           <property name="text">
@@ -482,8 +485,86 @@ augmentation (TTA):</string>
         <item row="1" column="1">
          <widget class="QComboBox" name="morphologyStrutureComboBox"/>
         </item>
+
+        <!-- NEW: voxel spacing fields -->
+        <item row="2" column="0">
+         <widget class="QLabel" name="morphologyVoxelSizeLabel">
+          <property name="text">
+           <string>Voxel size (µm):</string>
+          </property>
+         </widget>
+        </item>
+
+        <item row="3" column="0">
+         <widget class="QLabel" name="morphologySpacingXLabel">
+          <property name="text">
+           <string>X size [µm]:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QLineEdit" name="morphologySpacingXLineEdit">
+          <property name="placeholderText">
+           <string>e.g. 1.0833</string>
+          </property>
+         </widget>
+        </item>
+
+        <item row="4" column="0">
+         <widget class="QLabel" name="morphologySpacingYLabel">
+          <property name="text">
+           <string>Y size [µm]:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="1">
+         <widget class="QLineEdit" name="morphologySpacingYLineEdit">
+          <property name="placeholderText">
+           <string>e.g. 1.0833</string>
+          </property>
+         </widget>
+        </item>
+
+        <item row="5" column="0">
+         <widget class="QLabel" name="morphologySpacingZLabel">
+          <property name="text">
+           <string>Z size [µm]:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="5" column="1">
+         <widget class="QLineEdit" name="morphologySpacingZLineEdit">
+          <property name="placeholderText">
+           <string>e.g. 8.0</string>
+          </property>
+         </widget>
+        </item>
+
+        <!-- NEW: minimum object size -->
+        <item row="6" column="0">
+         <widget class="QLabel" name="morphologyMinObjectSizeLabel">
+          <property name="text">
+           <string>Min object size [voxels]:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="6" column="1">
+         <widget class="QSpinBox" name="morphologyMinObjectSizeSpinBox">
+          <property name="minimum">
+           <number>0</number>
+          </property>
+          <property name="maximum">
+           <number>1000000000</number>
+          </property>
+          <property name="value">
+           <number>0</number>
+          </property>
+         </widget>
+        </item>
+
        </layout>
       </item>
+
       <item>
        <widget class="QWidget" name="widget" native="true">
         <layout class="QGridLayout" name="gridLayout">

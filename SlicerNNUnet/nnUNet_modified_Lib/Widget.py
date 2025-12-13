@@ -13,7 +13,7 @@ from slicer.parameterNodeWrapper import parameterNodeWrapper
 from .InstallLogic import InstallLogic, InstallLogicProtocol
 from .Parameter import Parameter
 from .SegmentationLogic import SegmentationLogic, SegmentationLogicProtocol
-from .MorphologyAnalysis import compute_vessel_metrics, save_metrics_to_file
+from .MorphologyAnalysis import compute_global_metrics, save_metrics_to_file
 from .PostProcessing import Volume_Threshold
 
 
@@ -278,9 +278,35 @@ class Widget(qt.QWidget):
         slicer.util.resetSliceViews()
 
     def onSegmentationInputChanged(self, *_):
-
         segmentationNode = self.getCurrentSegmentationNode()
         self.ui.morphologyGenerateButton.setEnabled(segmentationNode is not None)
+
+        if segmentationNode is None:
+            # Clear spacing fields if nothing selected
+            if hasattr(self.ui, "morphologySpacingXLineEdit"):
+                self.ui.morphologySpacingXLineEdit.setText("")
+                self.ui.morphologySpacingYLineEdit.setText("")
+                self.ui.morphologySpacingZLineEdit.setText("")
+            return
+
+        # Try to get spacing from segmentation geometry and pre-fill fields (in µm)
+        try:
+            # Reuse our helper to get mask + spacing
+            mask_array, spacing_mm = self.getMaskNumpyAndSpacingFromNode(segmentationNode)
+
+            # Slicer spacing is usually in mm → convert to µm for display
+            sx_um = float(spacing_mm[0]) * 1000.0
+            sy_um = float(spacing_mm[1]) * 1000.0
+            sz_um = float(spacing_mm[2]) * 1000.0
+
+            if hasattr(self.ui, "morphologySpacingXLineEdit"):
+                self.ui.morphologySpacingXLineEdit.setText(f"{sx_um:.3f}")
+                self.ui.morphologySpacingYLineEdit.setText(f"{sy_um:.3f}")
+                self.ui.morphologySpacingZLineEdit.setText(f"{sz_um:.3f}")
+        except Exception as e:
+            # If anything goes wrong, just leave fields unchanged
+            print("Failed to auto-fill morphology spacing:", e)
+
         
 
     def getCurrentVolumeNode(self):
@@ -299,28 +325,17 @@ class Widget(qt.QWidget):
             self.onProgressInfo("Loading inference results...")
             segmentation = self.logic.loadSegmentation()
             segmentation.SetName(self.getCurrentVolumeNode().GetName() + "Segmentation")
+
+            # Make this the default input for Morphology
+            if hasattr(self.ui, "morphologyInput"):
+                self.ui.morphologyInput.setCurrentNode(segmentation)
+
             self._reportFinished("Inference ended successfully.")
-
-            # --- NEW PART: Morphological analysis ---
-            self.onProgressInfo("Running morphological analysis on segmentation...")
-
-            # Convert segmentation to numpy array
-            labelmap_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
-            slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(segmentation, labelmap_node, self.getCurrentVolumeNode())
-            mask_array = slicer.util.arrayFromVolume(labelmap_node)
-
-            # Compute metrics
-            df = compute_vessel_metrics(mask_array)
-            csv_path = save_metrics_to_file(df)
-
-            # Notify user
-            self._reportFinished(f"Morphological analysis complete.\nResults saved to:\n{csv_path}")
-            slicer.util.openAddDataDialog([csv_path])
-
         except RuntimeError as e:
             self._reportError(f"Inference ended in error:\n{e}")
         finally:
             self._setApplyVisible(True)
+
 
     def onInferenceError(self, errorMsg):
         if self.isStopping:
@@ -444,27 +459,64 @@ class Widget(qt.QWidget):
             self.ui.morphologyOutputLineEdit.setText(folder)
     
     def onGenerateMorphologyClicked(self, *_):
-        structure_method = {"Vessel": compute_vessel_metrics}
         segNode = self.getCurrentSegmentationNode()
         if segNode is None:
             self._reportError("No segmentation or volume selected.")
             return
 
         output_dir = self.ui.morphologyOutputLineEdit.text
-        structure = self.ui.morphologyStrutureComboBox.currentText
 
         try:
-            self.onProgressInfo("Extracting Morphology properties....")
-            mask_array = self.getMaskNumpyFromNode(segNode)
+            self.onProgressInfo("Extracting Morphology properties...")
 
-            df = structure_method[structure](mask_array)
-            csv_path = save_metrics_to_file(df=df, output_dir=output_dir)
+            # 1) Get mask and spacing from the node (spacing in mm from Slicer)
+            mask_array, spacing_mm = self.getMaskNumpyAndSpacingFromNode(segNode)
+
+            # 2) Read voxel spacing from UI (expected in µm).
+            #    If all three fields are non-empty and parseable, use them.
+            #    Otherwise, fall back to spacing_mm * 1000.
+            try:
+                x_text = self.ui.morphologySpacingXLineEdit.text if hasattr(self.ui, "morphologySpacingXLineEdit") else ""
+                y_text = self.ui.morphologySpacingYLineEdit.text if hasattr(self.ui, "morphologySpacingYLineEdit") else ""
+                z_text = self.ui.morphologySpacingZLineEdit.text if hasattr(self.ui, "morphologySpacingZLineEdit") else ""
+
+                if x_text and y_text and z_text:
+                    sx_um = float(x_text)
+                    sy_um = float(y_text)
+                    sz_um = float(z_text)
+                    spacing_um = (sx_um, sy_um, sz_um)
+                else:
+                    # Fallback: interpret Slicer spacing as mm and convert to µm
+                    spacing_um = tuple(float(s) * 1000.0 for s in spacing_mm)
+            except Exception as e:
+                # If parsing fails, use fallback from node spacing
+                print("Failed to parse morphology spacing from UI, using node spacing:", e)
+                spacing_um = tuple(float(s) * 1000.0 for s in spacing_mm)
+
+            # 3) Get min object size from UI (voxels)
+            min_object_size_vox = 0
+            if hasattr(self.ui, "morphologyMinObjectSizeSpinBox"):
+                try:
+                    min_object_size_vox = int(self.ui.morphologyMinObjectSizeSpinBox.value)
+                except Exception:
+                    min_object_size_vox = 0
+
+            # 4) Compute metrics in µm / µm³
+            df = compute_global_metrics(
+                mask_array,
+                spacing=spacing_um,
+                min_object_size_vox=min_object_size_vox,
+            )
+
+            csv_path = save_metrics_to_file(df=df, output_dir=output_dir, base_name="MorphologyMetrics")
 
             self._reportFinished(f"Morphology complete. Saved to:\n{csv_path}")
             slicer.util.loadTable(csv_path)
 
         except Exception as e:
             self._reportError(f"Morphology failed:\n{e}")
+
+
 
 
     def getMaskNumpyFromNode(self, node):
@@ -497,6 +549,43 @@ class Widget(qt.QWidget):
             return (slicer.util.arrayFromVolume(node) > 0).astype(np.uint8)
 
         raise TypeError("Unsupported node type for morphology.")
+
+
+    def getMaskNumpyAndSpacingFromNode(self, node):
+        """Return (mask_array, spacing) from segmentation / labelmap / volume.
+
+        spacing is (sx, sy, sz) in the node's physical units.
+        """
+        if node is None:
+            raise ValueError("No input node provided.")
+
+        # Case 1: Segmentation node → export to labelmap using segmentation geometry
+        if node.IsA("vtkMRMLSegmentationNode"):
+            labelmapNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+
+            # IMPORTANT CHANGE: do NOT pass a reference volume,
+            # let segmentation's internal geometry define the export.
+            slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(
+                node,
+                labelmapNode
+            )
+
+            mask = slicer.util.arrayFromVolume(labelmapNode)
+            spacing = labelmapNode.GetSpacing()
+            slicer.mrmlScene.RemoveNode(labelmapNode)
+            return mask, spacing
+
+        # Case 2: Labelmap volume node
+        if node.IsA("vtkMRMLLabelMapVolumeNode"):
+            return slicer.util.arrayFromVolume(node), node.GetSpacing()
+
+        # Case 3: Scalar volume node — assume binary mask (only if you really want this)
+        if node.IsA("vtkMRMLScalarVolumeNode"):
+            arr = slicer.util.arrayFromVolume(node)
+            return (arr > 0).astype(np.uint8), node.GetSpacing()
+
+        raise TypeError("Unsupported node type for morphology.")
+
 
 
 
