@@ -13,8 +13,13 @@ from slicer.parameterNodeWrapper import parameterNodeWrapper
 from .InstallLogic import InstallLogic, InstallLogicProtocol
 from .Parameter import Parameter
 from .SegmentationLogic import SegmentationLogic, SegmentationLogicProtocol
-from .MorphologyAnalysis import compute_global_metrics, save_metrics_to_file
+from .MorphologyAnalysis import (
+    compute_global_metrics,
+    compute_skeleton_and_branch_masks,
+    save_metrics_to_file,
+)
 from .PostProcessing import Volume_Threshold
+from scipy.ndimage import binary_dilation
 
 
 @parameterNodeWrapper
@@ -473,8 +478,6 @@ class Widget(qt.QWidget):
             mask_array, spacing_mm = self.getMaskNumpyAndSpacingFromNode(segNode)
 
             # 2) Read voxel spacing from UI (expected in µm).
-            #    If all three fields are non-empty and parseable, use them.
-            #    Otherwise, fall back to spacing_mm * 1000.
             try:
                 x_text = self.ui.morphologySpacingXLineEdit.text if hasattr(self.ui, "morphologySpacingXLineEdit") else ""
                 y_text = self.ui.morphologySpacingYLineEdit.text if hasattr(self.ui, "morphologySpacingYLineEdit") else ""
@@ -489,7 +492,6 @@ class Widget(qt.QWidget):
                     # Fallback: interpret Slicer spacing as mm and convert to µm
                     spacing_um = tuple(float(s) * 1000.0 for s in spacing_mm)
             except Exception as e:
-                # If parsing fails, use fallback from node spacing
                 print("Failed to parse morphology spacing from UI, using node spacing:", e)
                 spacing_um = tuple(float(s) * 1000.0 for s in spacing_mm)
 
@@ -513,8 +515,148 @@ class Widget(qt.QWidget):
             self._reportFinished(f"Morphology complete. Saved to:\n{csv_path}")
             slicer.util.loadTable(csv_path)
 
+            # 5) Compute skeleton + branchpoint masks for visualization
+            self.onProgressInfo("Generating skeleton and branchpoint visualizations...")
+
+            skeleton_mask, branch_mask = compute_skeleton_and_branch_masks(
+                mask_array,
+                spacing=spacing_um,
+                min_object_size_vox=min_object_size_vox,
+                pruning_scale=1.5,  # could later expose in UI
+            )
+
+            # Make thicker masks for visualization (does NOT affect metrics)
+            if skeleton_mask is not None:
+                # 2–3 voxels thick skeleton
+                skeleton_vis = binary_dilation(skeleton_mask, iterations=3)
+            else:
+                skeleton_vis = skeleton_mask
+
+            if branch_mask is not None:
+                # branchpoints more “blob-like” so they stand out
+                branch_vis = binary_dilation(branch_mask, iterations=5)
+            else:
+                branch_vis = branch_mask
+
+
+            # If nothing to show, stop here
+            if (skeleton_mask is None or not skeleton_mask.any()) and (branch_mask is None or not branch_mask.any()):
+                self.onProgressInfo("No skeleton / branchpoints to visualize.")
+                return
+
+
+            # 6) Create a template labelmap to copy geometry from the segmentation
+            segLogic = slicer.modules.segmentations.logic()
+            templateLabelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+            segLogic.ExportVisibleSegmentsToLabelmapNode(segNode, templateLabelmap)
+
+            # Sanity check: array shapes should match
+            template_array = slicer.util.arrayFromVolume(templateLabelmap)
+            if template_array.shape != skeleton_mask.shape:
+                print("Warning: template labelmap shape does not match skeleton mask shape.")
+                print("Template:", template_array.shape, "Skeleton:", skeleton_mask.shape)
+
+            # 7) Create skeleton segmentation node (blue)
+            # --- REMOVE old visualization nodes from previous runs (otherwise you keep seeing old red dots) ---
+            def _removeNodeByName(name: str):
+                try:
+                    n = slicer.util.getNode(name)
+                    slicer.mrmlScene.RemoveNode(n)
+                except slicer.util.MRMLNodeNotFoundException:
+                    pass
+
+            _removeNodeByName(segNode.GetName() + "_Skeleton")
+            _removeNodeByName(segNode.GetName() + "_Branchpoints")
+
+            if skeleton_vis is not None and skeleton_vis.any():
+                skeleton_labelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+                skeleton_labelmap.SetName(segNode.GetName() + "_Skeleton_Labelmap")
+                slicer.util.updateVolumeFromArray(skeleton_labelmap, skeleton_vis.astype(np.uint8))
+                skeleton_labelmap.CopyOrientation(templateLabelmap)
+                skeleton_labelmap.SetSpacing(templateLabelmap.GetSpacing())
+                skeleton_labelmap.SetOrigin(templateLabelmap.GetOrigin())
+
+                skeletonSeg = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+                skeletonSeg.SetName(segNode.GetName() + "_Skeleton")
+                segLogic.ImportLabelmapToSegmentationNode(skeleton_labelmap, skeletonSeg)
+
+                # Ensure a closed surface representation exists for 3D
+                if hasattr(skeletonSeg, "CreateClosedSurfaceRepresentation"):
+                    skeletonSeg.CreateClosedSurfaceRepresentation()
+
+                # Color skeleton segment blue
+                seg = skeletonSeg.GetSegmentation()
+                if seg.GetNumberOfSegments() > 0:
+                    segId = seg.GetNthSegmentID(0)
+                    seg.GetSegment(segId).SetName("Skeleton")
+                    seg.GetSegment(segId).SetColor(0.0, 0.0, 1.0)  # blue
+
+                dispNode = skeletonSeg.GetDisplayNode()
+                if dispNode:
+                    if hasattr(dispNode, "SetOpacity3D"):
+                        dispNode.SetOpacity3D(0.8)
+
+                slicer.mrmlScene.RemoveNode(skeleton_labelmap)
+
+
+            # 8) Create branchpoint segmentation node (red)
+            if branch_vis is not None and branch_vis.any():
+                branch_labelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+                branch_labelmap.SetName(segNode.GetName() + "_Branchpoints_Labelmap")
+                slicer.util.updateVolumeFromArray(branch_labelmap, branch_vis.astype(np.uint8))
+                branch_labelmap.CopyOrientation(templateLabelmap)
+                branch_labelmap.SetSpacing(templateLabelmap.GetSpacing())
+                branch_labelmap.SetOrigin(templateLabelmap.GetOrigin())
+
+                branchSeg = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+                branchSeg.SetName(segNode.GetName() + "_Branchpoints")
+                segLogic.ImportLabelmapToSegmentationNode(branch_labelmap, branchSeg)
+
+                # Ensure closed surface for 3D
+                if hasattr(branchSeg, "CreateClosedSurfaceRepresentation"):
+                    branchSeg.CreateClosedSurfaceRepresentation()
+
+                # Color branchpoint segment red
+                seg = branchSeg.GetSegmentation()
+                if seg.GetNumberOfSegments() > 0:
+                    segId = seg.GetNthSegmentID(0)
+                    seg.GetSegment(segId).SetName("Branchpoints")
+                    seg.GetSegment(segId).SetColor(1.0, 0.0, 0.0)  # red
+
+                dispNode = branchSeg.GetDisplayNode()
+                if dispNode:
+                    if hasattr(dispNode, "SetOpacity3D"):
+                        dispNode.SetOpacity3D(0.9)
+
+                slicer.mrmlScene.RemoveNode(branch_labelmap)
+
+            # Ensure original segmentation is visible in 3D
+            if segNode is not None:
+                # Make sure display nodes exist
+                if segNode.GetDisplayNode() is None:
+                    segNode.CreateDefaultDisplayNodes()
+
+                # Make sure a closed surface representation exists for 3D
+                if hasattr(segNode, "CreateClosedSurfaceRepresentation"):
+                    segNode.CreateClosedSurfaceRepresentation()
+
+                segDispNode = segNode.GetDisplayNode()
+                if segDispNode:
+                    segDispNode.SetVisibility3D(True)
+                    if hasattr(segDispNode, "SetOpacity3D"):
+                        segDispNode.SetOpacity3D(0.5)
+
+            # Cleanup template
+            slicer.mrmlScene.RemoveNode(templateLabelmap)
+
+            # Let the user know visualization is done
+            self.onProgressInfo("Done.")
+
         except Exception as e:
             self._reportError(f"Morphology failed:\n{e}")
+
+
+
 
 
 
