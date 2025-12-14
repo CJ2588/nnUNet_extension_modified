@@ -298,6 +298,11 @@ def compute_skeleton_and_branch_masks(
 
     # 4) Graph + branches on original skeleton
     neighbors0, endpoints0, branchpoints0 = _build_skeleton_graph(skeleton)
+    
+    #####DEBUG########################################
+    print(f"[Morphology] (viz) Graph 1: initial branchpoints = {len(branchpoints0)}")
+    #####END##########################################
+
     branches = _extract_branches(neighbors0, endpoints0, branchpoints0)
 
     # 5) Prune branches
@@ -323,13 +328,29 @@ def compute_skeleton_and_branch_masks(
     # Fallback: if everything got pruned, revert to original skeleton
     skeleton_use = skeleton if not skeleton_pruned.any() else skeleton_pruned
 
+    #####DEBUG#########################################
+    _, _, branchpoints_after_graph = _build_skeleton_graph(skeleton_use)
+    print(f"[Morphology] (viz) Graph 2: branchpoints after pruning = {len(branchpoints_after_graph)}")
+    #####END###########################################
+
+
     # 7) Branchpoints on PRUNED skeleton: 26-neighborhood + cluster collapse
     kernel = np.ones((3, 3, 3), dtype=np.int32)
     neighbor_count = convolve(skeleton_use.astype(np.int32), kernel, mode="constant", cval=0)
     neighbors = neighbor_count - skeleton_use.astype(np.int32)
     raw_branch_mask = (skeleton_use > 0) & (neighbors >= 3)
 
+    #####DEBUG#########################################
+    print(f"[Morphology] (viz) After pruning: raw branch voxels = {int(raw_branch_mask.sum())}")
+    #####END###########################################
+
     labeled, n_components = label(raw_branch_mask.astype(np.uint8))
+
+    #####DEBUG#########################################
+    print(f"[Morphology] (viz) After pruning: connected branchpoint components = {int(n_components)}")
+    #####END###########################################
+
+
     branch_mask = np.zeros_like(raw_branch_mask, dtype=bool)
 
     for comp_idx in range(1, n_components + 1):
@@ -374,7 +395,7 @@ def compute_global_metrics(
         return pd.DataFrame([result])
 
     # 1b) Smoothing (same as in visualization)
-    mask_smooth = _smooth_mask(mask_clean, iterations=1)
+    mask_smooth = _smooth_mask(mask_clean, iterations=5)
     if not mask_smooth.any():
         mask_smooth = mask_clean
 
@@ -406,6 +427,11 @@ def compute_global_metrics(
 
     # 4) Build skeleton graph and extract branches
     neighbors_dict, endpoints, branchpoints = _build_skeleton_graph(skeleton)
+
+    #####DEBUG#########################################
+    print(f"[Morphology] (metrics) Graph 1: initial branchpoints = {len(branchpoints)}")
+    #####END###########################################
+
     branches = _extract_branches(neighbors_dict, endpoints, branchpoints)
 
     # 5) Scale-aware pruning of branches (same as visualization)
@@ -435,6 +461,12 @@ def compute_global_metrics(
     else:
         skeleton_use = skeleton_pruned
 
+    _, _, branchpoints_after_graph = _build_skeleton_graph(skeleton_use)
+    #####DEBUG#########################################
+    print(f"[Morphology] (metrics) Graph 2: branchpoints after pruning = {len(branchpoints_after_graph)}")
+    #####END###########################################
+
+
     # 7) Radii / diameters at pruned skeleton voxels
     skel_indices = np.where(skeleton_use)
     if skel_indices[0].size == 0:
@@ -460,7 +492,17 @@ def compute_global_metrics(
         neighbors = neighbor_count - skeleton_use.astype(np.int32)
         raw_branch_mask = (skeleton_use > 0) & (neighbors >= 3)
 
+        #####DEBUG#########################################
+        print(f"[Morphology] (metrics) After pruning: raw branch voxels = {int(raw_branch_mask.sum())}")
+        #####END###########################################
+
+
         labeled, n_components = label(raw_branch_mask.astype(np.uint8))
+
+        #####DEBUG#########################################
+        print(f"[Morphology] (metrics) After pruning: connected branchpoint components = {int(n_components)}")
+        #####END###########################################
+
         total_branch_points = int(n_components)
 
     # 8) Volumes (computed on cleaned mask, not smoothed, to preserve volume)
