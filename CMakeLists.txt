@@ -15,6 +15,7 @@ The installation steps are based on the work done in the SlicerTotalSegmentator 
 set(EXTENSION_ICONURL "https://github.com/KitwareMedical/SlicerNNUnet/raw/main/SlicerNNUnet/Resources/Icons/SlicerNNUnet.png")
 set(EXTENSION_SCREENSHOTURLS "https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/1.png")
 set(EXTENSION_DEPENDS "PyTorch SlicerPythonTestRunner") # Specified as a list or "NA" if no dependencies
+set(Slicer_EXTENSION_PYTHON_DEPENDENCIES "networkx")
 
 #-----------------------------------------------------------------------------
 # Extension dependencies
