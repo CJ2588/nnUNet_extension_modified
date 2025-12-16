@@ -388,6 +388,7 @@ def compute_global_metrics(
             "Mean diameter (µm)": 0.0,
             "Min diameter (µm)": 0.0,
             "Max diameter (µm)": 0.0,
+            "Approx. diameter V/L (µm)": 0.0,
             "Branching points": 0,
             "Vessel volume (µm³)": 0.0,
             "Total sample volume (µm³)": _r2(roi_volume),
@@ -395,7 +396,7 @@ def compute_global_metrics(
         return pd.DataFrame([result])
 
     # 1b) Smoothing (same as in visualization)
-    mask_smooth = _smooth_mask(mask_clean, iterations=5)
+    mask_smooth = _smooth_mask(mask_clean, iterations=1)
     if not mask_smooth.any():
         mask_smooth = mask_clean
 
@@ -409,12 +410,14 @@ def compute_global_metrics(
         roi_volume = float(mask_clean.size * voxel_volume)
         volume_fraction = 100.0 * vessel_volume / roi_volume if roi_volume > 0 else 0.0
 
+        # no skeleton → no length, so V/L diameter is 0
         result = {
             "Vessel volume (%)": _r2(volume_fraction),
             "Total length (µm)": 0.0,
             "Mean diameter (µm)": 0.0,
             "Min diameter (µm)": 0.0,
             "Max diameter (µm)": 0.0,
+            "Approx. diameter V/L (µm)": 0.0,
             "Branching points": 0,
             "Vessel volume (µm³)": _r2(vessel_volume),
             "Total sample volume (µm³)": _r2(roi_volume),
@@ -428,7 +431,7 @@ def compute_global_metrics(
     # 4) Build skeleton graph and extract branches
     neighbors_dict, endpoints, branchpoints = _build_skeleton_graph(skeleton)
 
-    #####DEBUG#########################################
+    #####DEBUG########################################
     print(f"[Morphology] (metrics) Graph 1: initial branchpoints = {len(branchpoints)}")
     #####END###########################################
 
@@ -462,7 +465,8 @@ def compute_global_metrics(
         skeleton_use = skeleton_pruned
 
     _, _, branchpoints_after_graph = _build_skeleton_graph(skeleton_use)
-    #####DEBUG#########################################
+
+    #####DEBUG########################################
     print(f"[Morphology] (metrics) Graph 2: branchpoints after pruning = {len(branchpoints_after_graph)}")
     #####END###########################################
 
@@ -473,6 +477,7 @@ def compute_global_metrics(
         mean_diam = min_diam = max_diam = 0.0
         total_length = 0.0
         total_branch_points = 0
+        approx_diam_vl = 0.0
     else:
         radii = dist[skel_indices]
         diameters = 2.0 * radii
@@ -492,18 +497,27 @@ def compute_global_metrics(
         neighbors = neighbor_count - skeleton_use.astype(np.int32)
         raw_branch_mask = (skeleton_use > 0) & (neighbors >= 3)
 
-        #####DEBUG#########################################
+        #####DEBUG########################################
         print(f"[Morphology] (metrics) After pruning: raw branch voxels = {int(raw_branch_mask.sum())}")
         #####END###########################################
 
 
         labeled, n_components = label(raw_branch_mask.astype(np.uint8))
 
-        #####DEBUG#########################################
+        #####DEBUG########################################
         print(f"[Morphology] (metrics) After pruning: connected branchpoint components = {int(n_components)}")
         #####END###########################################
 
         total_branch_points = int(n_components)
+
+        # --- NEW: Approximate diameter from Volume / Length ---
+        if total_length > 0.0:
+            vessel_voxels_tmp = int(mask_clean.sum())
+            vessel_volume_tmp = float(vessel_voxels_tmp * voxel_volume)  # same as below
+            mean_cs_area = vessel_volume_tmp / total_length  # µm²
+            approx_diam_vl = 2.0 * np.sqrt(mean_cs_area / np.pi)  # µm
+        else:
+            approx_diam_vl = 0.0
 
     # 8) Volumes (computed on cleaned mask, not smoothed, to preserve volume)
     vessel_voxels = int(mask_clean.sum())
@@ -517,6 +531,7 @@ def compute_global_metrics(
         "Mean diameter (µm)": _r2(mean_diam),
         "Min diameter (µm)": _r2(min_diam),
         "Max diameter (µm)": _r2(max_diam),
+        "Approx. diameter V/L (µm)": _r2(approx_diam_vl),
         "Branching points": int(total_branch_points),
         "Vessel volume (µm³)": _r2(vessel_volume),
         "Total sample volume (µm³)": _r2(roi_volume),
