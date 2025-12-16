@@ -108,15 +108,18 @@ def _prune_branches_scale_aware(
     branchpoints: set[tuple],
     pruning_scale: float,
     min_branch_length_um: float,
+    diameter_scale: float,        # <--- NEW
 ) -> list[list[tuple]]:
     """
-    Prune only terminal branches (ending in endpoints), based on physical length
-    and vessel radius at the branching point.
+    Prune only terminal branches (ending in endpoints), based on:
+      * absolute physical length (min_branch_length_um),
+      * vessel radius at the branching point (pruning_scale),
+      * mean diameter along the branch (diameter_scale).
 
     Interior segments between two branchpoints are always kept to preserve
     the main vessel trunks.
     """
-    if pruning_scale <= 0 and min_branch_length_um <= 0:
+    if pruning_scale <= 0 and min_branch_length_um <= 0 and diameter_scale <= 0:
         return branches
 
     spacing_zyx = np.array((spacing[2], spacing[1], spacing[0]), dtype=float)
@@ -144,10 +147,21 @@ def _prune_branches_scale_aware(
         if min_branch_length_um > 0 and L < min_branch_length_um:
             continue
 
-        # 2) Scale-aware pruning: compare to vessel radius at branchpoint
+        # 2) Diameter-scale pruning (VesselExpress diaScale):
+        #    compare branch length to mean diameter along that branch.
+        if diameter_scale > 0:
+            # dist_um contains radii in µm at each voxel
+            radii_branch = np.array([dist_um[p] for p in branch], dtype=float)
+            if radii_branch.size > 0:
+                mean_diam_branch = 2.0 * radii_branch.mean()  # µm
+                if mean_diam_branch > 0 and L < diameter_scale * mean_diam_branch:
+                    # too short compared to its own diameter → prune
+                    continue
+
+        # 3) Scale-aware pruning: compare to vessel radius at branchpoint
         if pruning_scale > 0:
             if p_start in branchpoints:
-                B = float(dist_um[p_start])
+                B = float(dist_um[p_start])     # radius at branchpoint
             elif p_end in branchpoints:
                 B = float(dist_um[p_end])
             else:
@@ -155,7 +169,7 @@ def _prune_branches_scale_aware(
                 B = float(max(dist_um[p_start], dist_um[p_end]))
 
             if B > 0 and L < pruning_scale * B:
-                # too short relative to local thickness → prune
+                # too short relative to local thickness at branchpoint → prune
                 continue
 
         # If we made it here, keep this terminal branch
@@ -306,7 +320,7 @@ def compute_skeleton_and_branch_masks(
     branches = _extract_branches(neighbors0, endpoints0, branchpoints0)
 
     # 5) Prune branches
-    min_branch_length_um = 100.0
+    min_branch_length_um = 0.0
     effective_pruning_scale = max(pruning_scale, 2.0)
 
     pruned_branches = _prune_branches_scale_aware(
@@ -317,6 +331,7 @@ def compute_skeleton_and_branch_masks(
         branchpoints=branchpoints0,
         pruning_scale=effective_pruning_scale,
         min_branch_length_um=min_branch_length_um,
+        diameter_scale=2.0,        # <--- NEW
     )
 
     # 6) Rebuild pruned skeleton
@@ -439,7 +454,7 @@ def compute_global_metrics(
 
     # 5) Scale-aware pruning of branches (same as visualization)
     spacing_arr = np.asarray(spacing, dtype=float)
-    min_branch_length_um = 100.0
+    min_branch_length_um = 0.0
     effective_pruning_scale = max(pruning_scale, 2.0)
 
     pruned_branches = _prune_branches_scale_aware(
@@ -450,6 +465,7 @@ def compute_global_metrics(
         branchpoints=branchpoints,
         pruning_scale=effective_pruning_scale,
         min_branch_length_um=min_branch_length_um,
+        diameter_scale=2.0,        # <--- NEW
     )
 
     # 6) Rebuild pruned skeleton
