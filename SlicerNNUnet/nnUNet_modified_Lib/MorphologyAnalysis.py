@@ -5,86 +5,58 @@ from skimage.morphology import skeletonize  # unified 2D/3D skeletonization
 import slicer
 import os
 
-# 26-neighborhood offsets (excluding center)
-_NEIGHBOR_OFFSETS = [
-    (dz, dy, dx)
-    for dz in (-1, 0, 1)
-    for dy in (-1, 0, 1)
-    for dx in (-1, 0, 1)
-    if not (dz == 0 and dy == 0 and dx == 0)
-]
+
+from skimage.morphology import remove_small_objects, ball
+import networkx as nx
+from itertools import product
 
 
-def _build_skeleton_graph(skeleton: np.ndarray):
+def _get_branching_points(mask, degree_threshold=2):
     """
-    Build adjacency for skeleton voxels and classify endpoints / branchpoints.
+    Build a 3D skeleton graph (networkx) and return branching points + graph.
+
+    Parameters
+    ----------
+    mask : 3D array-like
+        Binary vessel mask.
+    degree_threshold : int
+        Nodes with degree > degree_threshold are considered branchpoints.
+        (With 2, that means degree >= 3.)
 
     Returns
     -------
-    neighbors_dict : dict[(z,y,x)] -> [ (z,y,x), ... ]
-    endpoints      : set[(z,y,x)]
-    branchpoints   : set[(z,y,x)]
+    branch_nodes : list[(z,y,x)]
+    G            : nx.Graph with nodes = (z,y,x)
     """
-    coords = np.argwhere(skeleton)
-    skel_set = {tuple(c) for c in coords}
+    # Find branching points in a 3D skeleton volume.
+    skeleton = skeletonize(mask.astype(bool))
+    skeleton = skeleton.astype(bool)
 
-    neighbors_dict: dict[tuple, list] = {}
-    endpoints: set[tuple] = set()
-    branchpoints: set[tuple] = set()
+    # 26-neighborhood offsets (exclude center)
+    neighbour_voxels = [
+        offset for offset in product((-1, 0, 1), repeat=3)
+        if offset != (0, 0, 0)
+    ]
 
-    for z, y, x in skel_set:
-        p = (z, y, x)
-        nb = []
-        for dz, dy, dx in _NEIGHBOR_OFFSETS:
-            q = (z + dz, y + dy, x + dx)
-            if q in skel_set:
-                nb.append(q)
-        neighbors_dict[p] = nb
-        deg = len(nb)
-        if deg == 1:
-            endpoints.add(p)
-        elif deg >= 3:
-            branchpoints.add(p)
+    G = nx.Graph()
 
-    return neighbors_dict, endpoints, branchpoints
+    z_max, y_max, x_max = skeleton.shape
 
+    # Loop over all voxels
+    for z in range(z_max):
+        for y in range(y_max):
+            for x in range(x_max):
+                if not skeleton[z, y, x]:
+                    continue
+                for dz, dy, dx in neighbour_voxels:
+                    nz, ny, nx_ = z + dz, y + dy, x + dx
+                    if 0 <= nz < z_max and 0 <= ny < y_max and 0 <= nx_ < x_max:
+                        if skeleton[nz, ny, nx_]:
+                            G.add_edge((z, y, x), (nz, ny, nx_))
 
-def _extract_branches(neighbors_dict, endpoints, branchpoints):
-    """
-    Extract branches as paths from endpoints / branchpoints along degree-2 voxels.
-    Each branch is a list of (z,y,x) voxels.
-    """
-    branches: list[list[tuple]] = []
-    visited_edges: set[tuple] = set()
-
-    def edge_key(a, b):
-        # order-independent key for undirected edge
-        return (a, b) if a <= b else (b, a)
-
-    def trace(start, neighbor):
-        path = [start]
-        prev = start
-        curr = neighbor
-
-        while True:
-            path.append(curr)
-            visited_edges.add(edge_key(prev, curr))
-            next_neighbors = [n for n in neighbors_dict.get(curr, []) if n != prev]
-            if len(next_neighbors) != 1:
-                # reached endpoint or branchpoint
-                break
-            prev, curr = curr, next_neighbors[0]
-        return path
-
-    start_nodes = list(endpoints) + list(branchpoints)
-    for start in start_nodes:
-        for nb in neighbors_dict.get(start, []):
-            ekey = edge_key(start, nb)
-            if ekey in visited_edges:
-                continue
-            branches.append(trace(start, nb))
-
-    return branches
+    # Branching points = nodes with degree > degree_threshold
+    branch_nodes = [n for n, d in G.degree() if d > degree_threshold]
+    return branch_nodes, G
 
 
 def _branch_length_um(branch, spacing_zyx: np.ndarray) -> float:
@@ -99,83 +71,105 @@ def _branch_length_um(branch, spacing_zyx: np.ndarray) -> float:
         length += np.linalg.norm(diff)
     return float(length)
 
-
 def _prune_branches_scale_aware(
-    branches: list[list[tuple]],
-    dist_um: np.ndarray,
-    spacing: np.ndarray,
-    endpoints: set[tuple],
-    branchpoints: set[tuple],
-    pruning_scale: float,
-    min_branch_length_um: float,
-    diameter_scale: float,        # <--- NEW
-) -> list[list[tuple]]:
+    G,
+    spacing,
+    dist_um,
+    threshold_um: float = 0.0,
+    pruning_scale: float = 0.0,
+    diameter_scale: float = 0.0,
+):
     """
-    Prune only terminal branches (ending in endpoints), based on:
-      * absolute physical length (min_branch_length_um),
-      * vessel radius at the branching point (pruning_scale),
-      * mean diameter along the branch (diameter_scale).
+    Prune short terminal branches in a skeleton graph G.
 
-    Interior segments between two branchpoints are always kept to preserve
-    the main vessel trunks.
+    Uses three criteria (all optional):
+      1) threshold_um      : absolute minimum physical length (µm)
+      2) diameter_scale    : L < diameter_scale * mean_diameter_along_branch
+      3) pruning_scale     : L < pruning_scale  * local_radius_at_junction
+
+    IMPORTANT: this version does a *single pass* on the original graph.
+    Only branches that start at an original leaf (degree == 1) are pruned.
+    Interior trunk segments (between branchpoints) are not touched,
+    and no new leaves are created/used in later iterations.
     """
-    if pruning_scale <= 0 and min_branch_length_um <= 0 and diameter_scale <= 0:
-        return branches
 
-    spacing_zyx = np.array((spacing[2], spacing[1], spacing[0]), dtype=float)
-    kept: list[list[tuple]] = []
+    # If all criteria are off, just return a copy
+    if threshold_um <= 0 and pruning_scale <= 0 and diameter_scale <= 0:
+        return G.copy()
 
-    for branch in branches:
-        if len(branch) < 2:
-            continue
+    G = G.copy()  # work on a copy
 
-        p_start = branch[0]
-        p_end = branch[-1]
+    # Use degrees from the original graph to define leaves and path continuation
+    original_degrees = dict(G.degree())
+    leaves = [n for n, d in original_degrees.items() if d == 1]
 
-        # Is this branch terminal? (touching an endpoint)
-        is_terminal = (p_start in endpoints) or (p_end in endpoints)
+    for leaf in leaves:
+        if not G.has_node(leaf):
+            continue  # might have been removed already by a previous path
 
-        # Interior branches (between branchpoints) are kept untouched
-        if not is_terminal:
-            kept.append(branch)
-            continue
+        # ---- 1) Trace branch from leaf until ORIGINAL degree != 2 ----
+        path = [leaf]
+        current = leaf
+        prev = None
 
-        # Physical length of this branch in µm
-        L = _branch_length_um(branch, spacing_zyx)
+        while True:
+            # neighbors that are still in the graph and not where we came from
+            neighbor_nodes = [n for n in G.neighbors(current) if n != prev]
+            if not neighbor_nodes:
+                break
 
-        # 1) Absolute minimum length (e.g. 100 µm): drop if shorter
-        if min_branch_length_um > 0 and L < min_branch_length_um:
-            continue
+            nxt = neighbor_nodes[0]
+            # stop if this next node was not a simple degree-2 node in the original graph
+            if original_degrees.get(nxt, 0) != 2:
+                path.append(nxt)
+                break
 
-        # 2) Diameter-scale pruning (VesselExpress diaScale):
-        #    compare branch length to mean diameter along that branch.
-        if diameter_scale > 0:
-            # dist_um contains radii in µm at each voxel
-            radii_branch = np.array([dist_um[p] for p in branch], dtype=float)
+            path.append(nxt)
+            prev, current = current, nxt
+
+        if len(path) < 2:
+            continue  # nothing to prune
+
+        # Physical length of the branch (µm)
+        L = _branch_length_um(path, spacing)
+
+        # Decide whether to prune this path
+        prune_this = False
+
+        # ---- 2) Absolute length criterion ----
+        if threshold_um > 0 and L < threshold_um:
+            prune_this = True
+
+        # ---- 3) Diameter-scale pruning (diaScale-like) ----
+        if not prune_this and diameter_scale > 0:
+            radii_branch = np.array([dist_um[p] for p in path], dtype=float)
             if radii_branch.size > 0:
                 mean_diam_branch = 2.0 * radii_branch.mean()  # µm
                 if mean_diam_branch > 0 and L < diameter_scale * mean_diam_branch:
-                    # too short compared to its own diameter → prune
-                    continue
+                    prune_this = True
 
-        # 3) Scale-aware pruning: compare to vessel radius at branchpoint
-        if pruning_scale > 0:
-            if p_start in branchpoints:
-                B = float(dist_um[p_start])     # radius at branchpoint
-            elif p_end in branchpoints:
-                B = float(dist_um[p_end])
+        # ---- 4) Pruning based on local radius at junction (pruning_scale) ----
+        if not prune_this and pruning_scale > 0:
+            junction = path[-1]  # last node where we stopped
+
+            # use original degree to decide if junction was a real branchpoint
+            deg_junc = original_degrees.get(junction, 0)
+
+            if deg_junc >= 3:
+                B = float(dist_um[junction])
             else:
-                # fallback: use max radius at endpoints
-                B = float(max(dist_um[p_start], dist_um[p_end]))
+                # fallback: use max radius at path endpoints
+                B = float(max(dist_um[path[0]], dist_um[path[-1]]))
 
             if B > 0 and L < pruning_scale * B:
-                # too short relative to local thickness at branchpoint → prune
-                continue
+                prune_this = True
 
-        # If we made it here, keep this terminal branch
-        kept.append(branch)
+        # ---- 5) Apply pruning for this branch only ----
+        if prune_this:
+            G.remove_nodes_from(path)
 
-    return kept
+    return G
+
 
 
 def _r2(x: float) -> float:
@@ -191,77 +185,27 @@ def _clean_mask(mask: np.ndarray, min_object_size_vox: int = 0) -> np.ndarray:
     if min_object_size_vox <= 0:
         return mask
 
-    labeled, num = label(mask)
-    cleaned = np.zeros_like(mask, dtype=bool)
-
-    for comp_idx in range(1, num + 1):
-        comp = (labeled == comp_idx)
-        if comp.sum() >= min_object_size_vox:
-            cleaned[comp] = True
-
+    cleaned = remove_small_objects(mask, min_size=min_object_size_vox)
     return cleaned
 
 
-def _smooth_mask(mask: np.ndarray, iterations: int = 1) -> np.ndarray:
-    """
-    Simple binary smoothing: a few rounds of opening+closing with a 3x3x3 structuring element.
-
-    This reduces jagged edges and tiny spurs that cause fake branches, similar in spirit
-    to VesselExpress' segmentation smoothing.
-    """
+def _smooth_mask(mask: np.ndarray, radius: int = 1,
+                 do_opening: bool = True,
+                 do_closing: bool = True) -> np.ndarray:
     mask = mask.astype(bool)
     if not mask.any():
         return mask
 
-    struct = np.ones((3, 3, 3), dtype=bool)
+    selem = ball(radius)
+
     smoothed = mask.copy()
-    for _ in range(iterations):
-        smoothed = binary_opening(smoothed, structure=struct)
-        smoothed = binary_closing(smoothed, structure=struct)
+    if do_opening:
+        smoothed = binary_opening(smoothed, selem)
+    if do_closing:
+        smoothed = binary_closing(smoothed, selem)
+
     return smoothed
 
-
-def _branch_mask_from_skeleton(skeleton_use: np.ndarray) -> np.ndarray:
-    """
-    From a skeleton, compute a branchpoint mask with exactly ONE voxel per
-    branchpoint (cluster center), using a 6-neighborhood (axis-aligned).
-    """
-    if not skeleton_use.any():
-        return np.zeros_like(skeleton_use, dtype=bool)
-
-    skel_int = skeleton_use.astype(np.int32)
-
-    # 6-neighborhood kernel (no center voxel)
-    kernel = np.zeros((3, 3, 3), dtype=np.int32)
-    kernel[1, 1, 0] = 1  # -x
-    kernel[1, 1, 2] = 1  # +x
-    kernel[1, 0, 1] = 1  # -y
-    kernel[1, 2, 1] = 1  # +y
-    kernel[0, 1, 1] = 1  # -z
-    kernel[2, 1, 1] = 1  # +z
-
-    neighbor_count = convolve(skel_int, kernel, mode="constant", cval=0)
-
-    # Raw branch voxels: skeleton voxels that have >=3 axis-aligned neighbors
-    raw_branch_mask = (skeleton_use > 0) & (neighbor_count >= 3)
-
-    if not raw_branch_mask.any():
-        return raw_branch_mask
-
-    # Collapse each connected blob of branch voxels to a single voxel
-    labeled, n_components = label(raw_branch_mask.astype(np.uint8))
-    branch_mask = np.zeros_like(raw_branch_mask, dtype=bool)
-
-    for comp_idx in range(1, n_components + 1):
-        coords = np.argwhere(labeled == comp_idx)
-        if coords.size == 0:
-            continue
-        # Use the rounded center-of-mass of the cluster
-        center = np.round(coords.mean(axis=0)).astype(int)
-        z, y, x = center
-        branch_mask[z, y, x] = True
-
-    return branch_mask
 
 
 def compute_skeleton_and_branch_masks(
@@ -280,7 +224,8 @@ def compute_skeleton_and_branch_masks(
     branch_mask   : np.ndarray (bool)
         Branchpoints computed from the PRUNED skeleton.
     """
-    spacing_arr = np.asarray(spacing, dtype=float)
+    spacing_xyz = np.asarray(spacing, dtype=float)       # (sx, sy, sz)
+    spacing_zyx = spacing_xyz[::-1]                      # (sz, sy, sx) for distances
 
     # helper for consistent empty returns
     def _empty(shape):
@@ -295,79 +240,54 @@ def compute_skeleton_and_branch_masks(
     if mask_clean.sum() == 0:
         return _empty(mask_clean.shape)
 
-    # 1b) Smoothing before skeletonization (NEW)
-    mask_smooth = _smooth_mask(mask_clean, iterations=1)
+    # 1b) Smoothing before skeletonization
+    mask_smooth = _smooth_mask(mask_clean, radius=5, do_opening=False, do_closing=True)
     if not mask_smooth.any():
         # Fallback: if smoothing killed everything, use cleaned mask
         mask_smooth = mask_clean
 
-    # 2) Skeletonize on smoothed mask
-    skeleton = skeletonize(mask_smooth).astype(bool)
-    if not skeleton.any():
-        return _empty(mask_clean.shape)
+    # 2) Distance transform for radii in µm (on same mask used for skeleton)
+    dist = distance_transform_edt(mask_smooth, sampling=spacing_zyx)
 
-    # 3) Distance transform for radii in µm (on same mask used for skeleton)
-    sampling = spacing_arr[::-1]  # (sz, sy, sx)
-    dist = distance_transform_edt(mask_smooth, sampling=sampling)
+    # 3) Build graph from skeleton of smoothed mask
+    branch_nodes0, G0 = _get_branching_points(mask_smooth, degree_threshold=2)
+    print(f"[Morphology] (viz) Graph 1: initial branchpoints = {len(branch_nodes0)}")
 
-    # 4) Graph + branches on original skeleton
-    neighbors0, endpoints0, branchpoints0 = _build_skeleton_graph(skeleton)
-    
-    #####DEBUG########################################
-    print(f"[Morphology] (viz) Graph 1: initial branchpoints = {len(branchpoints0)}")
-    #####END##########################################
+    # 4) Prune short terminal branches in the graph
+    min_branch_length_um = 60.0             # your absolute threshold (can be >0 if you want)
+    effective_pruning_scale = max(pruning_scale, 0.0)
+    diameter_scale = 2.0                   # like diaScale in VesselExpress
 
-    branches = _extract_branches(neighbors0, endpoints0, branchpoints0)
-
-    # 5) Prune branches
-    min_branch_length_um = 0.0
-    effective_pruning_scale = max(pruning_scale, 2.0)
-
-    pruned_branches = _prune_branches_scale_aware(
-        branches=branches,
+    G_pruned = _prune_branches_scale_aware(
+        G=G0,
+        spacing=spacing_zyx,
         dist_um=dist,
-        spacing=spacing_arr,
-        endpoints=endpoints0,
-        branchpoints=branchpoints0,
+        threshold_um=min_branch_length_um,
         pruning_scale=effective_pruning_scale,
-        min_branch_length_um=min_branch_length_um,
-        diameter_scale=2.0,        # <--- NEW
+        diameter_scale=diameter_scale,
     )
 
-    # 6) Rebuild pruned skeleton
-    skeleton_pruned = np.zeros_like(skeleton, dtype=bool)
-    for branch in pruned_branches:
-        for p in branch:
-            skeleton_pruned[p] = True
+    # 5) Rebuild pruned skeleton mask from pruned graph
+    skeleton_use = np.zeros_like(mask_smooth, dtype=bool)
+    for (z, y, x) in G_pruned.nodes:
+        skeleton_use[z, y, x] = True
 
-    # Fallback: if everything got pruned, revert to original skeleton
-    skeleton_use = skeleton if not skeleton_pruned.any() else skeleton_pruned
+    # Debug: branchpoints after pruning (in graph sense)
+    branch_nodes_after = [n for n, d in G_pruned.degree() if d >= 3]
+    print(f"[Morphology] (viz) Graph 2: branchpoints after pruning = {len(branch_nodes_after)}")
 
-    #####DEBUG#########################################
-    _, _, branchpoints_after_graph = _build_skeleton_graph(skeleton_use)
-    print(f"[Morphology] (viz) Graph 2: branchpoints after pruning = {len(branchpoints_after_graph)}")
-    #####END###########################################
-
-
-    # 7) Branchpoints on PRUNED skeleton: 26-neighborhood + cluster collapse
+    # 6) Branchpoints on PRUNED skeleton: 26-neighborhood + cluster collapse
     kernel = np.ones((3, 3, 3), dtype=np.int32)
     neighbor_count = convolve(skeleton_use.astype(np.int32), kernel, mode="constant", cval=0)
     neighbors = neighbor_count - skeleton_use.astype(np.int32)
     raw_branch_mask = (skeleton_use > 0) & (neighbors >= 3)
 
-    #####DEBUG#########################################
     print(f"[Morphology] (viz) After pruning: raw branch voxels = {int(raw_branch_mask.sum())}")
-    #####END###########################################
 
     labeled, n_components = label(raw_branch_mask.astype(np.uint8))
-
-    #####DEBUG#########################################
     print(f"[Morphology] (viz) After pruning: connected branchpoint components = {int(n_components)}")
-    #####END###########################################
-
 
     branch_mask = np.zeros_like(raw_branch_mask, dtype=bool)
-
     for comp_idx in range(1, n_components + 1):
         coords = np.argwhere(labeled == comp_idx)
         if coords.size == 0:
@@ -379,6 +299,7 @@ def compute_skeleton_and_branch_masks(
     return skeleton_use, branch_mask
 
 
+
 def compute_global_metrics(
     vessel_mask: np.ndarray,
     spacing: tuple[float, float, float] = (1.0, 1.0, 1.0),
@@ -388,14 +309,14 @@ def compute_global_metrics(
     """
     Compute sample-level lymphatic vessel metrics for a 3D binary mask.
     """
-    spacing = np.asarray(spacing, dtype=float)
-    voxel_volume = float(spacing.prod())  # [µm^3]
+    spacing_xyz = np.asarray(spacing, dtype=float)       # (sx, sy, sz)
+    spacing_zyx = spacing_xyz[::-1]                      # (sz, sy, sx)
+    voxel_volume = float(spacing_xyz.prod())             # [µm^3]
 
     # 1) Cleanup: remove tiny components if requested
     mask_clean = _clean_mask(vessel_mask > 0, min_object_size_vox=min_object_size_vox)
 
     if mask_clean.sum() == 0:
-        # Empty mask after cleanup
         roi_volume = float(mask_clean.size * voxel_volume)
         result = {
             "Vessel volume (%)": 0.0,
@@ -411,83 +332,40 @@ def compute_global_metrics(
         return pd.DataFrame([result])
 
     # 1b) Smoothing (same as in visualization)
-    mask_smooth = _smooth_mask(mask_clean, iterations=1)
+    mask_smooth = _smooth_mask(mask_clean, radius=5, do_opening=False, do_closing=True)
     if not mask_smooth.any():
         mask_smooth = mask_clean
 
-    # 2) Skeletonize
-    skeleton = skeletonize(mask_smooth).astype(bool)
+    # 2) Distance transform with spacing (µm) → radii in µm
+    dist = distance_transform_edt(mask_smooth, sampling=spacing_zyx)
 
-    if not skeleton.any():
-        # Degenerate case: no skeleton even though mask is non-empty
-        vessel_voxels = int(mask_clean.sum())  # volume from cleaned (unsmoothed) mask
-        vessel_volume = float(vessel_voxels * voxel_volume)
-        roi_volume = float(mask_clean.size * voxel_volume)
-        volume_fraction = 100.0 * vessel_volume / roi_volume if roi_volume > 0 else 0.0
+    # 3) Build graph from skeleton of smoothed mask
+    branch_nodes0, G0 = _get_branching_points(mask_smooth, degree_threshold=2)
+    print(f"[Morphology] (metrics) Graph 1: initial branchpoints = {len(branch_nodes0)}")
 
-        # no skeleton → no length, so V/L diameter is 0
-        result = {
-            "Vessel volume (%)": _r2(volume_fraction),
-            "Total length (µm)": 0.0,
-            "Mean diameter (µm)": 0.0,
-            "Min diameter (µm)": 0.0,
-            "Max diameter (µm)": 0.0,
-            "Approx. diameter V/L (µm)": 0.0,
-            "Branching points": 0,
-            "Vessel volume (µm³)": _r2(vessel_volume),
-            "Total sample volume (µm³)": _r2(roi_volume),
-        }
-        return pd.DataFrame([result])
+    # 4) Prune in graph domain
+    min_branch_length_um = 60.0
+    effective_pruning_scale = max(pruning_scale, 0.0)
+    diameter_scale = 2.0
 
-    # 3) Distance transform with spacing (µm) → radii in µm
-    sampling = spacing[::-1]  # (sz, sy, sx)
-    dist = distance_transform_edt(mask_smooth, sampling=sampling)
-
-    # 4) Build skeleton graph and extract branches
-    neighbors_dict, endpoints, branchpoints = _build_skeleton_graph(skeleton)
-
-    #####DEBUG########################################
-    print(f"[Morphology] (metrics) Graph 1: initial branchpoints = {len(branchpoints)}")
-    #####END###########################################
-
-    branches = _extract_branches(neighbors_dict, endpoints, branchpoints)
-
-    # 5) Scale-aware pruning of branches (same as visualization)
-    spacing_arr = np.asarray(spacing, dtype=float)
-    min_branch_length_um = 0.0
-    effective_pruning_scale = max(pruning_scale, 2.0)
-
-    pruned_branches = _prune_branches_scale_aware(
-        branches=branches,
+    G_pruned = _prune_branches_scale_aware(
+        G=G0,
+        spacing=spacing_zyx,
         dist_um=dist,
-        spacing=spacing_arr,
-        endpoints=endpoints,
-        branchpoints=branchpoints,
+        threshold_um=min_branch_length_um,
         pruning_scale=effective_pruning_scale,
-        min_branch_length_um=min_branch_length_um,
-        diameter_scale=2.0,        # <--- NEW
+        diameter_scale=diameter_scale,
     )
 
-    # 6) Rebuild pruned skeleton
-    skeleton_pruned = np.zeros_like(skeleton, dtype=bool)
-    for branch in pruned_branches:
-        for z, y, x in branch:
-            skeleton_pruned[z, y, x] = True
+    # 5) Rebuild pruned skeleton mask
+    skeleton_use = np.zeros_like(mask_smooth, dtype=bool)
+    for (z, y, x) in G_pruned.nodes:
+        skeleton_use[z, y, x] = True
 
-    # Fallback: if everything got pruned, revert to original skeleton
-    if not skeleton_pruned.any():
-        skeleton_use = skeleton
-    else:
-        skeleton_use = skeleton_pruned
+    branch_nodes_after = [n for n, d in G_pruned.degree() if d >= 3]
+    print(f"[Morphology] (metrics) Graph 2: branchpoints after pruning = {len(branch_nodes_after)}")
 
-    _, _, branchpoints_after_graph = _build_skeleton_graph(skeleton_use)
-
-    #####DEBUG########################################
-    print(f"[Morphology] (metrics) Graph 2: branchpoints after pruning = {len(branchpoints_after_graph)}")
-    #####END###########################################
-
-
-    # 7) Radii / diameters at pruned skeleton voxels
+    # 6) Radii / diameters at pruned skeleton voxels
     skel_indices = np.where(skeleton_use)
     if skel_indices[0].size == 0:
         mean_diam = min_diam = max_diam = 0.0
@@ -504,7 +382,7 @@ def compute_global_metrics(
 
         # Approximate total length: #skeleton voxels * mean spacing
         n_skel_voxels = int(skeleton_use.sum())
-        mean_step = float(np.asarray(spacing, dtype=float).mean())
+        mean_step = float(spacing_xyz.mean())
         total_length = float(n_skel_voxels * mean_step)
 
         # Branch points on PRUNED skeleton: 26-neighborhood + cluster collapse
@@ -513,29 +391,23 @@ def compute_global_metrics(
         neighbors = neighbor_count - skeleton_use.astype(np.int32)
         raw_branch_mask = (skeleton_use > 0) & (neighbors >= 3)
 
-        #####DEBUG########################################
         print(f"[Morphology] (metrics) After pruning: raw branch voxels = {int(raw_branch_mask.sum())}")
-        #####END###########################################
-
 
         labeled, n_components = label(raw_branch_mask.astype(np.uint8))
-
-        #####DEBUG########################################
         print(f"[Morphology] (metrics) After pruning: connected branchpoint components = {int(n_components)}")
-        #####END###########################################
 
         total_branch_points = int(n_components)
 
-        # --- NEW: Approximate diameter from Volume / Length ---
+        # Approximate diameter from Volume / Length
         if total_length > 0.0:
             vessel_voxels_tmp = int(mask_clean.sum())
-            vessel_volume_tmp = float(vessel_voxels_tmp * voxel_volume)  # same as below
-            mean_cs_area = vessel_volume_tmp / total_length  # µm²
-            approx_diam_vl = 2.0 * np.sqrt(mean_cs_area / np.pi)  # µm
+            vessel_volume_tmp = float(vessel_voxels_tmp * voxel_volume)
+            mean_cs_area = vessel_volume_tmp / total_length   # µm²
+            approx_diam_vl = 2.0 * np.sqrt(mean_cs_area / np.pi)
         else:
             approx_diam_vl = 0.0
 
-    # 8) Volumes (computed on cleaned mask, not smoothed, to preserve volume)
+    # 7) Volumes (computed on cleaned mask, not smoothed)
     vessel_voxels = int(mask_clean.sum())
     vessel_volume = float(vessel_voxels * voxel_volume)
     roi_volume = float(mask_clean.size * voxel_volume)
@@ -554,6 +426,7 @@ def compute_global_metrics(
     }
 
     return pd.DataFrame([result])
+
 
 
 def save_metrics_to_file(df: pd.DataFrame, base_name: str = "VesselMetrics", output_dir: str = slicer.app.temporaryPath):
