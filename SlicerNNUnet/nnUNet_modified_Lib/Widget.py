@@ -502,12 +502,22 @@ class Widget(qt.QWidget):
                     min_object_size_vox = int(self.ui.morphologyMinObjectSizeSpinBox.value)
                 except Exception:
                     min_object_size_vox = 0
+            
+            # 3b) Min branch length (µm)
+            min_branch_length_um = 0.0
+            if hasattr(self.ui, "morphologyMinBranchLengthUmSpinBox"):
+                try:
+                    min_branch_length_um = float(self.ui.morphologyMinBranchLengthUmSpinBox.value)
+                except Exception:
+                    min_branch_length_um = 0
+
 
             # 4) Compute metrics in µm / µm³
             df = compute_global_metrics(
                 mask_array,
                 spacing=spacing_um,
                 min_object_size_vox=min_object_size_vox,
+                min_branch_length_um=min_branch_length_um,
             )
 
             csv_path = save_metrics_to_file(df=df, output_dir=output_dir, base_name="MorphologyMetrics")
@@ -523,6 +533,7 @@ class Widget(qt.QWidget):
                 spacing=spacing_um,
                 min_object_size_vox=min_object_size_vox,
                 pruning_scale=1.5,  # could later expose in UI
+                min_branch_length_um=min_branch_length_um,
             )
 
             # Make thicker masks for visualization (does NOT affect metrics)

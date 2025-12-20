@@ -561,6 +561,33 @@ augmentation (TTA):</string>
           </property>
          </widget>
         </item>
+        <!-- NEW: minimum branch length (µm) -->
+        <item row="7" column="0">
+         <widget class="QLabel" name="morphologyMinBranchLengthUmLabel">
+          <property name="text">
+           <string>Min branch length [µm]:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="7" column="1">
+         <widget class="QDoubleSpinBox" name="morphologyMinBranchLengthUmSpinBox">
+          <property name="minimum">
+           <double>0.0</double>
+          </property>
+          <property name="maximum">
+           <double>1000000000.0</double>
+          </property>
+          <property name="decimals">
+           <number>2</number>
+          </property>
+          <property name="singleStep">
+           <double>10.0</double>
+          </property>
+          <property name="value">
+           <double>100.0</double>
+          </property>
+         </widget>
+        </item>
 
        </layout>
       </item>
