@@ -254,7 +254,7 @@ def compute_skeleton_and_branch_masks(
     print(f"[Morphology] (viz) Graph 1: initial branchpoints = {len(branch_nodes0)}")
 
     # 4) Prune short terminal branches in the graph
-    min_branch_length_um = 60.0             # your absolute threshold (can be >0 if you want)
+    min_branch_length_um = 100.0             # your absolute threshold (can be >0 if you want)
     effective_pruning_scale = max(pruning_scale, 0.0)
     diameter_scale = 2.0                   # like diaScale in VesselExpress
 
@@ -344,7 +344,7 @@ def compute_global_metrics(
     print(f"[Morphology] (metrics) Graph 1: initial branchpoints = {len(branch_nodes0)}")
 
     # 4) Prune in graph domain
-    min_branch_length_um = 60.0
+    min_branch_length_um = 100.0
     effective_pruning_scale = max(pruning_scale, 0.0)
     diameter_scale = 2.0
 
