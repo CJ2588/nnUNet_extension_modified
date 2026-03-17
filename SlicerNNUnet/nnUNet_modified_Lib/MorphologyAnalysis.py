@@ -8,8 +8,6 @@ import os
 
 
 
-
-
 def compute_vessel_metrics(vessel_mask: np.ndarray):
     """Compute morphological metrics for each vessel in a 3D binary mask."""
     # Remove small components
@@ -24,8 +22,6 @@ def compute_vessel_metrics(vessel_mask: np.ndarray):
         distance_map = distance_transform_edt(vessel_separated)
         radii = distance_map[skeleton > 0]
         diameters = 2 * radii
-
-        
 
         # Length = # of skeleton voxels
         length = np.sum(skeleton)
