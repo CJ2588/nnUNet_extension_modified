@@ -13,8 +13,13 @@ from slicer.parameterNodeWrapper import parameterNodeWrapper
 from .InstallLogic import InstallLogic, InstallLogicProtocol
 from .Parameter import Parameter
 from .SegmentationLogic import SegmentationLogic, SegmentationLogicProtocol
-from .MorphologyAnalysis import compute_vessel_metrics, save_metrics_to_file
+from .MorphologyAnalysis import (
+    compute_global_metrics,
+    compute_skeleton_and_branch_masks,
+    save_metrics_to_file,
+)
 from .PostProcessing import Volume_Threshold
+from scipy.ndimage import binary_dilation
 
 
 @parameterNodeWrapper
@@ -278,9 +283,35 @@ class Widget(qt.QWidget):
         slicer.util.resetSliceViews()
 
     def onSegmentationInputChanged(self, *_):
-
         segmentationNode = self.getCurrentSegmentationNode()
         self.ui.morphologyGenerateButton.setEnabled(segmentationNode is not None)
+
+        if segmentationNode is None:
+            # Clear spacing fields if nothing selected
+            if hasattr(self.ui, "morphologySpacingXLineEdit"):
+                self.ui.morphologySpacingXLineEdit.setText("")
+                self.ui.morphologySpacingYLineEdit.setText("")
+                self.ui.morphologySpacingZLineEdit.setText("")
+            return
+
+        # Try to get spacing from segmentation geometry and pre-fill fields (in µm)
+        try:
+            # Reuse our helper to get mask + spacing
+            mask_array, spacing_mm = self.getMaskNumpyAndSpacingFromNode(segmentationNode)
+
+            # Slicer spacing is usually in mm → convert to µm for display
+            sx_um = float(spacing_mm[0]) * 1000.0
+            sy_um = float(spacing_mm[1]) * 1000.0
+            sz_um = float(spacing_mm[2]) * 1000.0
+
+            if hasattr(self.ui, "morphologySpacingXLineEdit"):
+                self.ui.morphologySpacingXLineEdit.setText(f"{sx_um:.3f}")
+                self.ui.morphologySpacingYLineEdit.setText(f"{sy_um:.3f}")
+                self.ui.morphologySpacingZLineEdit.setText(f"{sz_um:.3f}")
+        except Exception as e:
+            # If anything goes wrong, just leave fields unchanged
+            print("Failed to auto-fill morphology spacing:", e)
+
         
 
     def getCurrentVolumeNode(self):
@@ -299,28 +330,17 @@ class Widget(qt.QWidget):
             self.onProgressInfo("Loading inference results...")
             segmentation = self.logic.loadSegmentation()
             segmentation.SetName(self.getCurrentVolumeNode().GetName() + "Segmentation")
+
+            # Make this the default input for Morphology
+            if hasattr(self.ui, "morphologyInput"):
+                self.ui.morphologyInput.setCurrentNode(segmentation)
+
             self._reportFinished("Inference ended successfully.")
-
-            # --- NEW PART: Morphological analysis ---
-            self.onProgressInfo("Running morphological analysis on segmentation...")
-
-            # Convert segmentation to numpy array
-            labelmap_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
-            slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(segmentation, labelmap_node, self.getCurrentVolumeNode())
-            mask_array = slicer.util.arrayFromVolume(labelmap_node)
-
-            # Compute metrics
-            df = compute_vessel_metrics(mask_array)
-            csv_path = save_metrics_to_file(df)
-
-            # Notify user
-            self._reportFinished(f"Morphological analysis complete.\nResults saved to:\n{csv_path}")
-            slicer.util.openAddDataDialog([csv_path])
-
         except RuntimeError as e:
             self._reportError(f"Inference ended in error:\n{e}")
         finally:
             self._setApplyVisible(True)
+
 
     def onInferenceError(self, errorMsg):
         if self.isStopping:
@@ -444,27 +464,212 @@ class Widget(qt.QWidget):
             self.ui.morphologyOutputLineEdit.setText(folder)
     
     def onGenerateMorphologyClicked(self, *_):
-        structure_method = {"Vessel": compute_vessel_metrics}
         segNode = self.getCurrentSegmentationNode()
         if segNode is None:
             self._reportError("No segmentation or volume selected.")
             return
 
         output_dir = self.ui.morphologyOutputLineEdit.text
-        structure = self.ui.morphologyStrutureComboBox.currentText
 
         try:
-            self.onProgressInfo("Extracting Morphology properties....")
-            mask_array = self.getMaskNumpyFromNode(segNode)
+            self.onProgressInfo("Extracting Morphology properties...")
 
-            df = structure_method[structure](mask_array)
-            csv_path = save_metrics_to_file(df=df, output_dir=output_dir)
+            # 1) Get mask and spacing from the node (spacing in mm from Slicer)
+            mask_array, spacing_mm = self.getMaskNumpyAndSpacingFromNode(segNode)
+
+            # 2) Read voxel spacing from UI (expected in µm).
+            try:
+                x_text = self.ui.morphologySpacingXLineEdit.text if hasattr(self.ui, "morphologySpacingXLineEdit") else ""
+                y_text = self.ui.morphologySpacingYLineEdit.text if hasattr(self.ui, "morphologySpacingYLineEdit") else ""
+                z_text = self.ui.morphologySpacingZLineEdit.text if hasattr(self.ui, "morphologySpacingZLineEdit") else ""
+
+                if x_text and y_text and z_text:
+                    sx_um = float(x_text)
+                    sy_um = float(y_text)
+                    sz_um = float(z_text)
+                    spacing_um = (sx_um, sy_um, sz_um)
+                else:
+                    # Fallback: interpret Slicer spacing as mm and convert to µm
+                    spacing_um = tuple(float(s) * 1000.0 for s in spacing_mm)
+            except Exception as e:
+                print("Failed to parse morphology spacing from UI, using node spacing:", e)
+                spacing_um = tuple(float(s) * 1000.0 for s in spacing_mm)
+
+            # 3) Get min object size from UI (voxels)
+            min_object_size_vox = 0
+            if hasattr(self.ui, "morphologyMinObjectSizeSpinBox"):
+                try:
+                    min_object_size_vox = int(self.ui.morphologyMinObjectSizeSpinBox.value)
+                except Exception:
+                    min_object_size_vox = 0
+            
+            # 3b) Min branch length (µm)
+            min_branch_length_um = 0.0
+            if hasattr(self.ui, "morphologyMinBranchLengthUmSpinBox"):
+                try:
+                    min_branch_length_um = float(self.ui.morphologyMinBranchLengthUmSpinBox.value)
+                except Exception:
+                    min_branch_length_um = 0
+
+
+            # 4) Compute metrics in µm / µm³
+            df = compute_global_metrics(
+                mask_array,
+                spacing=spacing_um,
+                min_object_size_vox=min_object_size_vox,
+                min_branch_length_um=min_branch_length_um,
+            )
+
+            csv_path = save_metrics_to_file(df=df, output_dir=output_dir, base_name="MorphologyMetrics")
 
             self._reportFinished(f"Morphology complete. Saved to:\n{csv_path}")
             slicer.util.loadTable(csv_path)
 
+            # 5) Compute skeleton + branchpoint masks for visualization
+            self.onProgressInfo("Generating skeleton and branchpoint visualizations...")
+
+            skeleton_mask, branch_mask = compute_skeleton_and_branch_masks(
+                mask_array,
+                spacing=spacing_um,
+                min_object_size_vox=min_object_size_vox,
+                pruning_scale=1.5,  # could later expose in UI
+                min_branch_length_um=min_branch_length_um,
+            )
+
+            # Make thicker masks for visualization (does NOT affect metrics)
+            if skeleton_mask is not None:
+                # 2–3 voxels thick skeleton
+                skeleton_vis = binary_dilation(skeleton_mask, iterations=3)
+            else:
+                skeleton_vis = skeleton_mask
+
+            if branch_mask is not None:
+                # branchpoints more “blob-like” so they stand out
+                branch_vis = binary_dilation(branch_mask, iterations=5)
+            else:
+                branch_vis = branch_mask
+
+
+            # If nothing to show, stop here
+            if (skeleton_mask is None or not skeleton_mask.any()) and (branch_mask is None or not branch_mask.any()):
+                self.onProgressInfo("No skeleton / branchpoints to visualize.")
+                return
+
+
+            # 6) Create a template labelmap to copy geometry from the segmentation
+            segLogic = slicer.modules.segmentations.logic()
+            templateLabelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+            segLogic.ExportVisibleSegmentsToLabelmapNode(segNode, templateLabelmap)
+
+            # Sanity check: array shapes should match
+            template_array = slicer.util.arrayFromVolume(templateLabelmap)
+            if template_array.shape != skeleton_mask.shape:
+                print("Warning: template labelmap shape does not match skeleton mask shape.")
+                print("Template:", template_array.shape, "Skeleton:", skeleton_mask.shape)
+
+            # 7) Create skeleton segmentation node (blue)
+            # --- REMOVE old visualization nodes from previous runs (otherwise you keep seeing old red dots) ---
+            def _removeNodeByName(name: str):
+                try:
+                    n = slicer.util.getNode(name)
+                    slicer.mrmlScene.RemoveNode(n)
+                except slicer.util.MRMLNodeNotFoundException:
+                    pass
+
+            _removeNodeByName(segNode.GetName() + "_Skeleton")
+            _removeNodeByName(segNode.GetName() + "_Branchpoints")
+
+            if skeleton_vis is not None and skeleton_vis.any():
+                skeleton_labelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+                skeleton_labelmap.SetName(segNode.GetName() + "_Skeleton_Labelmap")
+                slicer.util.updateVolumeFromArray(skeleton_labelmap, skeleton_vis.astype(np.uint8))
+                skeleton_labelmap.CopyOrientation(templateLabelmap)
+                skeleton_labelmap.SetSpacing(templateLabelmap.GetSpacing())
+                skeleton_labelmap.SetOrigin(templateLabelmap.GetOrigin())
+
+                skeletonSeg = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+                skeletonSeg.SetName(segNode.GetName() + "_Skeleton")
+                segLogic.ImportLabelmapToSegmentationNode(skeleton_labelmap, skeletonSeg)
+
+                # Ensure a closed surface representation exists for 3D
+                if hasattr(skeletonSeg, "CreateClosedSurfaceRepresentation"):
+                    skeletonSeg.CreateClosedSurfaceRepresentation()
+
+                # Color skeleton segment blue
+                seg = skeletonSeg.GetSegmentation()
+                if seg.GetNumberOfSegments() > 0:
+                    segId = seg.GetNthSegmentID(0)
+                    seg.GetSegment(segId).SetName("Skeleton")
+                    seg.GetSegment(segId).SetColor(0.0, 0.0, 1.0)  # blue
+
+                dispNode = skeletonSeg.GetDisplayNode()
+                if dispNode:
+                    if hasattr(dispNode, "SetOpacity3D"):
+                        dispNode.SetOpacity3D(0.8)
+
+                slicer.mrmlScene.RemoveNode(skeleton_labelmap)
+
+
+            # 8) Create branchpoint segmentation node (red)
+            if branch_vis is not None and branch_vis.any():
+                branch_labelmap = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+                branch_labelmap.SetName(segNode.GetName() + "_Branchpoints_Labelmap")
+                slicer.util.updateVolumeFromArray(branch_labelmap, branch_vis.astype(np.uint8))
+                branch_labelmap.CopyOrientation(templateLabelmap)
+                branch_labelmap.SetSpacing(templateLabelmap.GetSpacing())
+                branch_labelmap.SetOrigin(templateLabelmap.GetOrigin())
+
+                branchSeg = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+                branchSeg.SetName(segNode.GetName() + "_Branchpoints")
+                segLogic.ImportLabelmapToSegmentationNode(branch_labelmap, branchSeg)
+
+                # Ensure closed surface for 3D
+                if hasattr(branchSeg, "CreateClosedSurfaceRepresentation"):
+                    branchSeg.CreateClosedSurfaceRepresentation()
+
+                # Color branchpoint segment red
+                seg = branchSeg.GetSegmentation()
+                if seg.GetNumberOfSegments() > 0:
+                    segId = seg.GetNthSegmentID(0)
+                    seg.GetSegment(segId).SetName("Branchpoints")
+                    seg.GetSegment(segId).SetColor(1.0, 0.0, 0.0)  # red
+
+                dispNode = branchSeg.GetDisplayNode()
+                if dispNode:
+                    if hasattr(dispNode, "SetOpacity3D"):
+                        dispNode.SetOpacity3D(0.9)
+
+                slicer.mrmlScene.RemoveNode(branch_labelmap)
+
+            # Ensure original segmentation is visible in 3D
+            if segNode is not None:
+                # Make sure display nodes exist
+                if segNode.GetDisplayNode() is None:
+                    segNode.CreateDefaultDisplayNodes()
+
+                # Make sure a closed surface representation exists for 3D
+                if hasattr(segNode, "CreateClosedSurfaceRepresentation"):
+                    segNode.CreateClosedSurfaceRepresentation()
+
+                segDispNode = segNode.GetDisplayNode()
+                if segDispNode:
+                    segDispNode.SetVisibility3D(True)
+                    if hasattr(segDispNode, "SetOpacity3D"):
+                        segDispNode.SetOpacity3D(0.5)
+
+            # Cleanup template
+            slicer.mrmlScene.RemoveNode(templateLabelmap)
+
+            # Let the user know visualization is done
+            self.onProgressInfo("Done.")
+
         except Exception as e:
             self._reportError(f"Morphology failed:\n{e}")
+
+
+
+
+
 
 
     def getMaskNumpyFromNode(self, node):
@@ -497,6 +702,43 @@ class Widget(qt.QWidget):
             return (slicer.util.arrayFromVolume(node) > 0).astype(np.uint8)
 
         raise TypeError("Unsupported node type for morphology.")
+
+
+    def getMaskNumpyAndSpacingFromNode(self, node):
+        """Return (mask_array, spacing) from segmentation / labelmap / volume.
+
+        spacing is (sx, sy, sz) in the node's physical units.
+        """
+        if node is None:
+            raise ValueError("No input node provided.")
+
+        # Case 1: Segmentation node → export to labelmap using segmentation geometry
+        if node.IsA("vtkMRMLSegmentationNode"):
+            labelmapNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+
+            # IMPORTANT CHANGE: do NOT pass a reference volume,
+            # let segmentation's internal geometry define the export.
+            slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(
+                node,
+                labelmapNode
+            )
+
+            mask = slicer.util.arrayFromVolume(labelmapNode)
+            spacing = labelmapNode.GetSpacing()
+            slicer.mrmlScene.RemoveNode(labelmapNode)
+            return mask, spacing
+
+        # Case 2: Labelmap volume node
+        if node.IsA("vtkMRMLLabelMapVolumeNode"):
+            return slicer.util.arrayFromVolume(node), node.GetSpacing()
+
+        # Case 3: Scalar volume node — assume binary mask (only if you really want this)
+        if node.IsA("vtkMRMLScalarVolumeNode"):
+            arr = slicer.util.arrayFromVolume(node)
+            return (arr > 0).astype(np.uint8), node.GetSpacing()
+
+        raise TypeError("Unsupported node type for morphology.")
+
 
 
 
