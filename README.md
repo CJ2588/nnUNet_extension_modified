@@ -1,114 +1,224 @@
 # Slicer nnUNet
 
-<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/1.png" width="800"/>
+<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/1.png" width="800" alt="Slicer nnUNet screenshot"/>
 
-## Table of contents
+This repository extends the original Slicer nnUNet module with additional workflow tools for channel inspection, segmentation post-processing, and vessel morphology analysis inside 3D Slicer.
 
-* [Introduction](#introduction)
-* [Acknowledgments](#acknowledgments)
-* [Using the extension](#using-the-extension)
-* [Changelog](#changelog)
-* [Expected Weight Folder Structure](#expected-weight-folder-structure)
-* [Contributing](#contributing)
+If you want the baseline module documentation, installation context, and the original usage notes, start with [OLD_README.md](OLD_README.md). This README focuses on the current state of this fork and the code changes that have been added on top of the original extension.
 
-## Introduction
+## Table of Contents
 
-<div style="text-align:center">
-<img class="center" src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/SlicerNNUnet/Resources/Icons/SlicerNNUnet.png"/>
-</div>
+- [Overview](#overview)
+- [What Changed in This Fork](#what-changed-in-this-fork)
+- [Current Workflows](#current-workflows)
+- [Morphology Outputs](#morphology-outputs)
+- [Expected Weight Folder Structure](#expected-weight-folder-structure)
+- [Acknowledgments](#acknowledgments)
+- [Contributing](#contributing)
 
-This module allows to install and run nnUNet trained models in 3D Slicer with only the training folder.
+## Overview
 
-It streamlines development and integration of new nnUNet models into the 3D Slicer environment.
+The module allows you to:
+
+- install nnUNet inside 3D Slicer's Python environment
+- run inference from a trained nnUNet model folder
+- inspect channels from multi-channel image inputs
+- post-process segmentation outputs
+- compute vessel morphology measurements from a segmentation
+- generate skeleton and branchpoint visualizations as Slicer segmentation nodes
+
+The main workflows are exposed directly in the module widget:
+
+- `nnUNet Install`
+- `nnUNet Run Settings`
+- `Post Processing`
+- `Morphology`
+
+## What Changed in This Fork
+
+Compared with the original extension, this fork adds the following user-facing functionality.
+
+### 1. Multi-channel input inspection
+
+<img src="Screenshots/Channel_detection.png" alt="Channel detection screenshot"/>
+
+The module now detects when the selected input volume contains multiple channels and exposes a `Channels` selector in the widget.
+
+What it does:
+
+- loads the selected volume with `nibabel` when possible
+- detects whether the input is 4D
+- lets the user preview individual channels in the Slicer slice viewers
+
+Important note:
+
+- this feature is a visualization aid for inspecting the selected input volume before inference
+- it does not create a new segmentation mode or a separate channel-processing pipeline
+
+### 2. Segmentation post-processing
+
+<img src="Screenshots/post_processing.png" alt="Post processing screenshot"/>
+
+The module now includes a `Post Processing` section for cleaning segmentation results after inference.
+
+Currently implemented:
+
+- `Volume Threshold`
+
+Behavior:
+
+- connected components smaller than the user-defined threshold are removed
+- the cleaned result is imported back into the scene as a new segmentation node
+
+Implementation note:
+
+- the threshold is applied in voxel count using connected-component labeling
+
+### 3. Morphology analysis workflow
+
+<img src="Screenshots/morphology.png" alt="Morphology screenshot"/>
+
+The module now includes a dedicated `Morphology` section for vessel-oriented analysis of a selected segmentation.
+
+The current implementation supports:
+
+- selecting a segmentation node as morphology input
+- automatic pre-filling of spacing fields from segmentation geometry
+- manual override of voxel spacing in `um`
+- optional removal of small connected components using `Min object size [voxels]`
+- optional pruning of short terminal branches using `Min branch length [um]`
+- CSV export of morphology metrics
+- automatic loading of the exported metrics table back into Slicer
+- creation of visualization segmentations for the vessel skeleton and branch points
+
+Important implementation details reflected in the code:
+
+- morphology spacing is derived from the selected segmentation geometry, not from the current reference volume
+- segmentation export for morphology uses the segmentation's own geometry when converting to a labelmap
+- branchpoint counting is performed on the pruned skeleton
+- skeleton and branchpoint visualization masks are dilated for easier viewing in 3D
+- previous morphology visualization nodes with the same generated names are removed before new ones are created
+
+## Current Workflows
+
+### Install nnUNet
+
+Use the `nnUNet Install` section to install nnUNet in Slicer's Python environment.
+
+<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/2.png" alt="Install screenshot"/>
+
+The widget shows the currently installed nnUNet version. If no version is installed, it displays `None`.
+
+You can:
+
+- leave `To install` empty to install the default/latest supported package version
+- specify a version suffix before clicking `Install`
+
+After installation, a Slicer restart may be required before inference can run.
+
+### Run inference
+
+Open `nnUNet Run Settings`, choose the trained model folder, select the input volume, and click `Apply`.
+
+<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/4.png" alt="Run settings screenshot"/>
+
+The current run settings exposed in the UI are:
+
+- model path
+- device selection: `cuda`, `cpu`, or `mps`
+- step size
+- checkpoint name
+- folds
+- preprocessing process count
+- segmentation export process count
+- disable test-time augmentation
+
+When inference finishes:
+
+- the segmentation is loaded into the Slicer scene
+- the segmentation is renamed from the input volume name
+- the new segmentation is automatically selected as the default input for the morphology workflow
+
+### Post-process a segmentation
+
+Use the `Post Processing` section to apply cleanup to an existing segmentation node.
+
+At this time, the only exposed method is `Volume Threshold`, which removes connected components smaller than a chosen voxel threshold.
+
+### Run morphology analysis
+
+Use the `Morphology` section to analyze a segmentation and export measurements.
+
+The workflow is:
+
+1. Select the segmentation node to analyze.
+2. Review or override the `X`, `Y`, and `Z` voxel size fields in `um`.
+3. Optionally set `Min object size [voxels]`.
+4. Optionally set `Min branch length [um]`.
+5. Choose an output folder.
+6. Click `Generate`.
+
+The module then:
+
+- computes morphology metrics
+- writes them to `MorphologyMetrics.csv`
+- loads the CSV as a table in Slicer
+- creates a skeleton segmentation node
+- creates a branchpoint segmentation node
+- updates 3D display visibility and opacity for the original segmentation and generated outputs
+
+## Morphology Outputs
+
+The current morphology metrics exported by the code are:
+
+- `Vessel volume (%)`
+- `Total length (um)`
+- `Mean diameter (um)`
+- `Min diameter (um)`
+- `Max diameter (um)`
+- `Approx. diameter V/L (um)`
+- `Branching points`
+- `Vessel volume (um^3)`
+- `Total sample volume (um^3)`
+
+The generated visualization outputs are:
+
+- a blue segmentation named with the `_Skeleton` suffix
+- a red segmentation named with the `_Branchpoints` suffix
+
+These outputs are created from the selected segmentation geometry so they align with the analyzed segmentation in Slicer. Below is an example from the dataset used to develop the extension
+
+<img src ="Screenshots/Vis_output_example.png"/>
+<img src ="Screenshots/Vis_table_example.png"/>
+
+## Expected Weight Folder Structure
+
+To run nnUNet inference, the model weight folder structure must be preserved.
+
+Expected structure:
+
+- `<dataset_id>`
+- `<trainer_name>__<plan_name>__<config_name>`
+- `fold_<n>`
+- `checkpoint_final.pth` or another checkpoint file name configured in the module
+- `dataset.json`
+
+Notes:
+
+- the dataset folder name must either begin with `Dataset` or be an integer id
+- the configuration folder name must split into exactly three parts using `__`
+- requested folds must exist and contain the selected checkpoint file
+
+If this structure is not preserved, validation fails and inference cannot run.
+
+The `Parameter` class contains the model-path validation logic used by the module.
+
+For general nnUNet model structure guidance, see the [official nnUNet documentation](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/how_to_use_nnunet.md#3d-u-net-cascade).
 
 ## Acknowledgments
 
-This module was originally co-financed by the 
-<a href="https://orthodontie-ffo.org/">Fédération Française d\'Orthodontie</a> (FFO) as part of the 
-<a href="https://github.com/gaudot/SlicerDentalSegmentator/">Dental Segmentator</a> 
-developments and the <a href="https://rhu-cosy.com/en/accueil-english/">Cure Overgrowth Syndromes</a> 
-(COSY) RHU Project.
-
-The installation steps are based on the work done in the 
-<a href="https://github.com/lassoan/SlicerTotalSegmentator/">Slicer Total Segmentator extension</a>.
-
-This extension interfaces 3D Slicer with the 
-<a href="https://github.com/MIC-DKFZ/nnUNet">nnUNet library</a>.
-
-Isensee, F., Jaeger, P. F., Kohl, S. A., Petersen, J., & Maier-Hein, K. H. (2021). nnU-Net: a self-configuring 
-method for deep learning-based biomedical image segmentation. Nature methods, 18(2), 203-211.
-
-
-## Using the extension
-
-This extension can be installed directly using Slicer's extension manager.
-
-Once installed, navigate to `Segmentation>nnUNet` in the modules drop down menu or search directly
-for `nnUnet`.
-
-Once in the widget, you can install nnUNet's dependencies by clicking on the "nnUNet Install" button.
-
-<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/2.png"/>
-
-This area will display the current version of nnUNet in 3D Slicer's environment.
-If nnUNet is not yet installed, the current version will display None.
-It can be installed by clicking on the install Button.
-
-After the install is complete, the current version should display the latest nnUNet version or the version as set in
-the "To install" field.
-
-<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/3.png"/>
-
-Note that the extension may require a 3D Slicer restart before running the inference.
-
-Once the nnUNet is correctly installed, click on the 'nnUNet Run Settings' button to set the path to the Model to use.
-This path will be saved for further usage after the first segmentation.
-
-The provided model path should contain the nnUNet 'dataset.json' file.
-
-> [!NOTE]
-> To test this extension, you can download the 
-> <a href="https://github.com/wasserth/TotalSegmentator/releases">Total Segmentator NNUNet weights</a> 
-> and use the `CTChest` Sample. 
-
-
-> [!WARNING]
-> The model weight folder structure should follow the nnUNet expected weight structure for this module to work
-> (see the [expected weight folder structure](#expected-weight-folder-structure) section)
-
-<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/4.png"/>
-
-Select the volume on which to run the model using the volume input editor.
-
-Then click on the `Apply` button.
-
-The logs console will display all the information regarding running the input model.
-
-Once the model has finished running, the segmentation will be loaded into 3D Slicer with its associated labels.
-It can then be viewed and edited in the `Segment Editor` module.
-
-<img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/1.png"/>
-
-## Expected weight folder structure
-
-To properly run the nnUNet prediction, the nnUNet weight folder structure should be preserved.
-
-nnUNet structure should look like the following : 
-* <dataset_id> : The dataset id should be either a string beginning by Dataset or an integer
-  * <trainer_name>__<plan_name>__<config_name> : default configuration folder name is `nnUNetTrainer__nnUNetPlans__3d_fullres`
-    * fold_<> : Fold folder from 0 to n containing the training weights
-      * <weight_name> : By default the weight name is `checkpoint_final.pth` it can also be modified using the `Parameter` class
-    * dataset.json : Configuration file containing dataset labels
-
-If this structure is not preserved, the inference will raise an error.
-
-The `Parameter` class provides an `isValid` method to check if the provided model structure is valid.
-
-Please read [the official nnUNet documentation](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/how_to_use_nnunet.md#3d-u-net-cascade) 
-for more information.
+This fork was developed with funding and support from ETH Zurich.
 
 ## Contributing
 
-This project welcomes contributions. It follows Slicer's rules for contributions. 
-If you want more information about how you can contribute, please refer to
-the [CONTRIBUTING.md file](https://github.com/Slicer/Slicer/blob/main/CONTRIBUTING.md).
+Contributions are welcome. For general Slicer contribution practices, see the [Slicer CONTRIBUTING.md](https://github.com/Slicer/Slicer/blob/main/CONTRIBUTING.md).
